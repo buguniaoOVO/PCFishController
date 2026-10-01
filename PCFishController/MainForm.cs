@@ -97,6 +97,17 @@ internal sealed partial class MainForm : Form
     private bool _gameBusy;
     private bool _waitingForGameIdle;
     private string _actionPauseReason = "";
+    /// <summary>
+    /// 暂停后自动恢复的时刻。
+    ///
+    /// 【为什么需要它】
+    ///   一次瞬时网络错误（例如 SSL/连接失败）会把动作暂停并要求点击 ARM。
+    ///   但暂停只把 _armed 置回 false，而 BeginRound 的前置检查又要求 _armed，
+    ///   于是没人点按钮时助手会永远停在那里 —— 日志却还写着「X 分钟后再次检查」。
+    ///   对挂机场景这是致命的：用户不看界面就不会知道已经停了。
+    ///   这里改成退避后自动恢复；真正结果未知的那种暂停仍保留较长的等待时间。
+    /// </summary>
+    private DateTime _autoResumeAt = DateTime.MinValue;
     private bool _serverInventoryReady;
     private bool _serverAuditPending;
     private bool _armAfterServerAudit;
@@ -134,7 +145,7 @@ internal sealed partial class MainForm : Form
 
         _log.LineWritten += OnLogLine;
         _goalPlan = GoalPlanner.Build(_settings.GoalType, _settings.GoalStar, _collectionTypes, _lastFish);
-        _log.Write(UiLanguage.T($"=== PCFish助手 v0.22.1 启动 ===（桥接端口 {_settings.Port}）"));
+        _log.Write(UiLanguage.T($"=== PCFish助手 v0.22.2 启动 ===（桥接端口 {_settings.Port}）"));
         _log.Write(UiLanguage.T($"配置文件：{AppSettings.FilePath}"));
         _log.Write(UiLanguage.T($"繁育节奏：每 {_settings.BreedIntervalMinSeconds / 60}~{_settings.BreedIntervalMaxSeconds / 60} 分钟检查，现有繁育计数器逐次用完"));
         _log.Write(UiLanguage.T("本程序不操作鼠标键盘、不向游戏窗口画任何东西。"));
@@ -425,6 +436,7 @@ internal sealed partial class MainForm : Form
                 _serverAuditWaitReason = "";
                 _serverAuditLogAt = DateTime.MinValue;
                 _serverAuditBusyCount = 0;
+                _autoResumeAt = DateTime.MinValue;
                 _statePending = false;
                 _awaitingBreed = false;
                 _preBreedSnapshot = null;
@@ -452,6 +464,8 @@ internal sealed partial class MainForm : Form
             return;
         }
         if (!on) { _armAfterServerAudit = false; _beginRoundAfterServerAudit = false; }
+        // 用户手动点了 ARM，就不再需要自动恢复。
+        if (on) _autoResumeAt = DateTime.MinValue;
         _client.Send(on ? "ARM 1" : "ARM 0");
         _armed = on;
         if (on) _actionPauseReason = "";
@@ -533,13 +547,13 @@ internal sealed partial class MainForm : Form
         switch (msg.type)
         {
             case "hello":
-                _bridgeVersionOk = msg.ver == "0.22.1";
+                _bridgeVersionOk = msg.ver == "0.22.2";
                 _readOnlyMode = false;
                 _bridgeMinInterval = Math.Max(60, msg.minInterval);
                 _bridgeAllowsActions = msg.cfg;
                 _log.Write($"桥接版本 {msg.ver}，最小动作间隔 {_bridgeMinInterval} 秒，" +
                            (msg.cfg ? "游戏内已放行动作" : "游戏内 cfg 尚未放行动作"));
-                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.22.1）不匹配，已阻止动作。");
+                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.22.2）不匹配，已阻止动作。");
                 _chkAuto.Enabled = _bridgeVersionOk;
                 _chkAutoUpgrade.Enabled = _bridgeVersionOk;
                 _btnOnce.Enabled = _bridgeVersionOk;
@@ -792,8 +806,15 @@ internal sealed partial class MainForm : Form
                 _actionPauseReason = msg.errorKind == "uncertain"
                     ? "本笔结果未知，等待游戏回包后点击 ARM 恢复"
                     : "请求或收尾失败，确认游戏恢复后点击 ARM 继续";
+                // 结果未知时不能自动重发（可能造成重复繁育），等用户确认。
+                // 结果明确的失败只是这一笔没成，退避一段时间后自己继续即可。
+                _autoResumeAt = msg.errorKind == "uncertain"
+                    ? DateTime.MinValue
+                    : DateTime.Now.AddSeconds(180);
                 SendArm(false);
                 _log.Write("自动动作已暂停；保留游戏提示，不换鱼重发，也不将网络失败计入亲鱼黑名单。");
+                if (_autoResumeAt != DateTime.MinValue)
+                    _log.Write("这是本笔的瞬时失败；3 分钟后自动重试，无需手动点 ARM。");
             }
             EndRound();
         }
@@ -889,6 +910,18 @@ internal sealed partial class MainForm : Form
     {
         UpdateStatusLabels();
         UpdateWarehouseCountdowns();
+
+        // 瞬时网络失败会自动恢复：暂停只影响这一笔，不该让挂机永久停摆。
+        if (_autoResumeAt != DateTime.MinValue && DateTime.Now >= _autoResumeAt &&
+            !_armed && !_roundActive && !_awaitingBreed && _chkAuto.Checked &&
+            _client.Connected && _bridgeVersionOk && !_windowLocked)
+        {
+            _autoResumeAt = DateTime.MinValue;
+            _actionPauseReason = "";
+            SendArm(true);
+            _log.Write("瞬时失败已过等待期，自动恢复自动繁育。");
+            UpdateDashboardSummary();
+        }
         if (!_serverAuditPending && (_armAfterServerAudit || _beginRoundAfterServerAudit) &&
             DateTime.Now >= _serverAuditRetryAt) RequestServerAudit();
         if (_serverAuditPending && (DateTime.Now - _serverAuditRequestedAt).TotalSeconds > 25)
@@ -1081,7 +1114,16 @@ internal sealed partial class MainForm : Form
         }
         else if (!string.IsNullOrEmpty(_actionPauseReason))
         {
-            _lblCountdown.Text = UiLanguage.T("自动操作已暂停：" + _actionPauseReason);
+            if (_autoResumeAt != DateTime.MinValue && DateTime.Now < _autoResumeAt)
+            {
+                var wait = (_autoResumeAt - DateTime.Now).TotalSeconds;
+                _lblCountdown.Text = UiLanguage.T("自动操作已暂停：") + _actionPauseReason +
+                    UiLanguage.T($"；{wait / 60.0:F1} 分钟后自动恢复");
+            }
+            else
+            {
+                _lblCountdown.Text = UiLanguage.T("自动操作已暂停：" + _actionPauseReason);
+            }
         }
         else if (_roundActive)
         {
