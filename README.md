@@ -147,6 +147,16 @@ powershell -ExecutionPolicy Bypass -File .\build-and-deploy.ps1 -GameDir "D:\Ste
 
 任务栏图标不是当前图标：Windows 会缓存快捷方式图标，删掉旧快捷方式后重新创建即可。
 
+## 支持作者
+
+这个助手免费开源。如果它帮你省下了守着繁育的时间，可以请作者喝杯奶茶。
+
+<p align="center">
+  <img src="docs/afdian-support.jpg" alt="爱发电：阿丸好饿" width="360">
+</p>
+
+<p align="center">扫码「为我发电」支持作者</p>
+
 ## 运行时文件
 
 控制器会在 exe 同目录生成 `PCFish控制器配置.json`、`PCFish控制器.log`、`PCFish亲缘关系.json`、`PCFish失败配对.json`、`PCFish Wiki数据库.json`。这些都属于本地数据，已在 `.gitignore` 中排除。
