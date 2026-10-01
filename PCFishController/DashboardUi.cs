@@ -76,6 +76,11 @@ internal sealed partial class MainForm
     private readonly Label _deployStatus = new();
     private Button _deployButton;
     private Button _gameDirBrowse;
+    private readonly Label _updateStatus = new();
+    private Button _updateCheckButton;
+    private Button _updateApplyButton;
+    private Button _updatePageButton;
+    private UpdateInfo _pendingUpdate;
     private bool _changingLanguage;
     private SynthesisRoute _synthesisRoute = new();
     private string _synthesisType = "";
@@ -1169,7 +1174,7 @@ internal sealed partial class MainForm
         AddPage(body, "settings", page);
         var deploy = Surface();
         deploy.Dock = DockStyle.Top;
-        deploy.Height = 196;
+        deploy.Height = 310;
         var deployTitle = Label("一键部署", 13, true);
         deployTitle.SetBounds(20, 14, 240, 34);
         var deployNote = Label("自动找到游戏目录、安装插件，并打开游戏内的动作总闸。", 9, false, Muted);
@@ -1193,6 +1198,34 @@ internal sealed partial class MainForm
         deploy.Controls.AddRange(new Control[]
         {
             deployTitle, deployNote, gameDirLabel, _gameDirBox, _gameDirBrowse, _deployButton, _deployStatus
+        });
+
+        // 版本更新：检查 GitHub 上的最新发布，由用户决定是否更新。
+        var updateTitle = Label("版本更新", 10, true, Muted);
+        updateTitle.SetBounds(22, 196, 110, 28);
+        _updateStatus.SetBounds(138, 194, 560, 30);
+        _updateStatus.ForeColor = Muted;
+        _updateStatus.Font = new Font("Microsoft YaHei UI", 9F);
+        _updateCheckButton = ActionButton("检查更新");
+        _updateCheckButton.SetBounds(702, 191, 108, 34);
+        _updateCheckButton.Click += async (_, _) => await CheckForUpdateAsync();
+        _updateApplyButton = ActionButton("立即更新", Green);
+        _updateApplyButton.SetBounds(816, 191, 108, 34);
+        _updateApplyButton.Enabled = false;
+        _updateApplyButton.Visible = false;
+        _updateApplyButton.Click += async (_, _) => await ApplyUpdateAsync();
+        _updatePageButton = ActionButton("打开发布页");
+        _updatePageButton.SetBounds(22, 232, 148, 34);
+        _updatePageButton.Click += (_, _) =>
+        {
+            UpdateChecker.OpenReleasesPage();
+            _log.Write("已在浏览器中打开发布页：" + UpdateChecker.ReleasesPage);
+        };
+        var updateNote = Label("更新只替换程序文件，不会动你的配置和游戏数据。", 9, false, Muted);
+        updateNote.SetBounds(22, 274, 780, 26);
+        deploy.Controls.AddRange(new Control[]
+        {
+            updateTitle, _updateStatus, _updateCheckButton, _updateApplyButton, _updatePageButton, updateNote
         });
 
         var card = Surface();
@@ -1232,6 +1265,104 @@ internal sealed partial class MainForm
             if (_changingLanguage || _languageCombo.SelectedIndex < 0) return;
             ChangeLanguage(_languageCombo.SelectedIndex == 1 ? "en" : "zh");
         };
+    }
+
+    /// <summary>检查 GitHub 上的最新发布。只查询，不下载。</summary>
+    private async Task CheckForUpdateAsync()
+    {
+        _updateCheckButton.Enabled = false;
+        _updateStatus.ForeColor = Muted;
+        _updateStatus.Text = UiLanguage.T("正在检查更新…");
+        try
+        {
+            var info = await UpdateChecker.CheckAsync();
+            _pendingUpdate = info.Ok && info.HasUpdate && !string.IsNullOrWhiteSpace(info.AssetUrl)
+                ? info : null;
+
+            var lines = new List<string> { info.Message };
+            if (_pendingUpdate != null)
+            {
+                var details = new List<string>();
+                if (!string.IsNullOrWhiteSpace(info.AssetName))
+                    details.Add($"{info.AssetName}（{info.DescribeSize()}）");
+                if (!string.IsNullOrWhiteSpace(info.LatestTag)) details.Add(info.LatestTag);
+                if (details.Count > 0) lines.Add(string.Join("  ·  ", details));
+            }
+            else if (info.Ok && info.HasUpdate)
+            {
+                lines.Add(UiLanguage.T("这个发布没有可下载的压缩包，请到发布页手动下载。"));
+            }
+            _updateStatus.Text = string.Join(Environment.NewLine, lines);
+            _updateStatus.ForeColor = _pendingUpdate != null ? Green : Muted;
+            _updateApplyButton.Visible = _pendingUpdate != null;
+            _updateApplyButton.Enabled = _pendingUpdate != null;
+            foreach (var line in lines) _log.Write("检查更新：" + line);
+            if (info.Ok && info.HasUpdate && !string.IsNullOrWhiteSpace(info.ReleaseUrl))
+                _log.Write("发布页：" + info.ReleaseUrl);
+        }
+        catch (Exception ex)
+        {
+            _updateStatus.Text = "检查更新失败：" + ex.Message;
+            _updateStatus.ForeColor = Pink;
+            _log.Write("检查更新异常：" + ex.Message);
+        }
+        finally
+        {
+            _updateCheckButton.Enabled = true;
+        }
+    }
+
+    /// <summary>下载并替换程序文件，然后重启。</summary>
+    private async Task ApplyUpdateAsync()
+    {
+        var info = _pendingUpdate;
+        if (info == null) return;
+
+        var confirm = MessageBox.Show(this,
+            UiLanguage.T($"将下载并安装 {info.LatestTag}，程序会自动重启。是否继续？") + Environment.NewLine +
+            UiLanguage.T("配置文件和游戏数据不会被改动。"),
+            UiLanguage.T("确认更新"),
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (confirm != DialogResult.Yes) return;
+
+        _updateApplyButton.Enabled = false;
+        _updateCheckButton.Enabled = false;
+        var progress = new List<string>();
+        void Report(string text)
+        {
+            progress.Add(text);
+            _updateStatus.Text = string.Join(Environment.NewLine, progress);
+            _updateStatus.ForeColor = Muted;
+            _log.Write("更新：" + text);
+        }
+
+        try
+        {
+            var (ok, message, shouldExit) = await UpdateChecker.ApplyAsync(info, text => Ui(() => Report(text)));
+            Report(message);
+            if (!ok)
+            {
+                _updateStatus.ForeColor = Pink;
+                _updateApplyButton.Enabled = true;
+                _updateCheckButton.Enabled = true;
+                return;
+            }
+            _updateStatus.ForeColor = Green;
+            if (!shouldExit) return;
+
+            SaveSettings();
+            _allowClose = true;
+            _trayIcon.Visible = false;
+            _client.Dispose();
+            Application.Exit();
+        }
+        catch (Exception ex)
+        {
+            Report("更新失败：" + ex.Message);
+            _updateStatus.ForeColor = Pink;
+            _updateApplyButton.Enabled = true;
+            _updateCheckButton.Enabled = true;
+        }
     }
 
     /// <summary>让用户手动指定游戏目录。留空则一键部署时自动查找。</summary>

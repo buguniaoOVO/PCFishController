@@ -3,6 +3,7 @@ bin/
 obj/
 publish/
 dist/
+release/
 *.pdb
 
 # 运行时数据（含个人游戏数据，不要提交）

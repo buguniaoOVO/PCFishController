@@ -131,7 +131,7 @@ internal sealed partial class MainForm : Form
 
         _log.LineWritten += OnLogLine;
         _goalPlan = GoalPlanner.Build(_settings.GoalType, _settings.GoalStar, _collectionTypes, _lastFish);
-        _log.Write(UiLanguage.T($"=== PCFish助手 v0.19.0 启动 ===（桥接端口 {_settings.Port}）"));
+        _log.Write(UiLanguage.T($"=== PCFish助手 v0.20.0 启动 ===（桥接端口 {_settings.Port}）"));
         _log.Write(UiLanguage.T($"配置文件：{AppSettings.FilePath}"));
         _log.Write(UiLanguage.T($"繁育节奏：每 {_settings.BreedIntervalMinSeconds / 60}~{_settings.BreedIntervalMaxSeconds / 60} 分钟检查，现有繁育计数器逐次用完"));
         _log.Write(UiLanguage.T("本程序不操作鼠标键盘、不向游戏窗口画任何东西。"));
@@ -512,13 +512,13 @@ internal sealed partial class MainForm : Form
         switch (msg.type)
         {
             case "hello":
-                _bridgeVersionOk = msg.ver == "0.19.0";
+                _bridgeVersionOk = msg.ver == "0.20.0";
                 _readOnlyMode = false;
                 _bridgeMinInterval = Math.Max(60, msg.minInterval);
                 _bridgeAllowsActions = msg.cfg;
                 _log.Write($"桥接版本 {msg.ver}，最小动作间隔 {_bridgeMinInterval} 秒，" +
                            (msg.cfg ? "游戏内已放行动作" : "游戏内 cfg 尚未放行动作"));
-                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.19.0）不匹配，已阻止动作。");
+                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.20.0）不匹配，已阻止动作。");
                 _chkAuto.Enabled = _bridgeVersionOk;
                 _chkAutoUpgrade.Enabled = _bridgeVersionOk;
                 _btnOnce.Enabled = _bridgeVersionOk;
