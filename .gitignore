@@ -1,0 +1,22 @@
+# 构建产物
+bin/
+obj/
+publish/
+dist/
+*.pdb
+
+# 运行时数据（含个人游戏数据，不要提交）
+PCFish控制器配置.json
+PCFish控制器.log
+PCFish控制器.crash.log
+PCFish亲缘关系.json
+PCFish失败配对.json
+PCFish Wiki数据库.json
+PCFishAutoHelper.log
+
+# 备份与本地工具
+backup/
+build-check-*/
+*.bak-*
+*.safe-backup
+*.safe-current-on-disk
