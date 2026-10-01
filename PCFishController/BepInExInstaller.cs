@@ -115,8 +115,12 @@ internal static class BepInExInstaller
         return (url, name, build);
     }
 
-    /// <summary>安装或升级 BepInEx。会先下载并校验，再备份既有文件，最后写入。</summary>
-    internal static async Task<BepInExInstallResult> InstallAsync(string gameDir, Action<string> report)
+    /// <summary>
+    /// 安装或升级 BepInEx。会先下载并校验，再备份既有文件，最后写入。
+    /// installPlugin 为 false 时只装运行环境，插件交给调用方（一键部署）处理。
+    /// </summary>
+    internal static async Task<BepInExInstallResult> InstallAsync(string gameDir, Action<string> report,
+        bool installPlugin = true)
     {
         var result = new BepInExInstallResult();
         void Step(string text)
@@ -233,13 +237,16 @@ internal static class BepInExInstaller
             Step($"已写入 {copied} 个文件到游戏目录");
 
             // 安装插件
-            var pluginSource = Path.Combine(AppContext.BaseDirectory, GameDeploy.PluginDllName);
-            var pluginTarget = Path.Combine(gameDir, GameDeploy.PluginsRelativePath, GameDeploy.PluginDllName);
-            if (File.Exists(pluginSource))
+            if (installPlugin)
             {
-                Directory.CreateDirectory(Path.GetDirectoryName(pluginTarget)!);
-                File.Copy(pluginSource, pluginTarget, overwrite: true);
-                Step("已安装 PCFish 插件到 BepInEx\\plugins");
+                var pluginSource = Path.Combine(AppContext.BaseDirectory, GameDeploy.PluginDllName);
+                var pluginTarget = Path.Combine(gameDir, GameDeploy.PluginsRelativePath, GameDeploy.PluginDllName);
+                if (File.Exists(pluginSource))
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(pluginTarget)!);
+                    File.Copy(pluginSource, pluginTarget, overwrite: true);
+                    Step("已安装 PCFish 插件到 BepInEx\\plugins");
+                }
             }
 
             Step("正在清理临时文件…");

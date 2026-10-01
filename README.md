@@ -50,7 +50,17 @@ PCFish 的繁育是一份重复劳动：打开功能窗口、翻仓库挑两条�
 
 ### 一键部署
 
-装插件原本要走一串手工步骤。现在在设置页点一下，它会自动找到游戏目录、放好插件、打开游戏内的动作总闸，并让配置里的端口和控制器一致，每一步的结果都显示在页面上。以后换了电脑或改了游戏目录，再点一次就行。
+跑起来原本要走一串手工步骤：装 BepInEx、放插件、启动游戏等配置生成、再打开里面的动作总闸。现在这些合并成设置页的一个按钮。
+
+点「一键部署」后它会依次完成：
+
+1. 定位游戏目录（也可以手动指定）
+2. 检测 BepInEx 运行环境，缺了就自动从官方构建站下载并安装
+3. 把 PCFishAutoHelper.dll 复制到 BepInEx 的 plugins 目录
+4. 首次部署时启动一次游戏，等插件生成配置文件，然后自动关掉这个进程
+5. 打开配置里的动作总闸，并让端口和控制器一致
+
+全程异步执行，每一步的进度实时写在按钮下方的状态区，同时进日志。装完按提示启动游戏，助手就会自动连上。以后换了电脑或改了游戏目录，再点一次就行。
 
 ### 安全设计
 
@@ -64,9 +74,10 @@ PCFish 的繁育是一份重复劳动：打开功能窗口、翻仓库挑两条�
 
 - Windows 10/11 64 位
 - 游戏 PCFish（Steam 版，Unity 6000.0.76f1，IL2CPP）
-- 已装好 BepInEx 6（开发时使用 6.0.0-be.788），游戏目录下存在 `BepInEx/core` 与 `BepInEx/interop`
 - 编译控制器需要 .NET 8 SDK
 - 编译插件需要 .NET 6 SDK 或更高（目标框架 net6.0）
+
+BepInEx 6 运行环境由助手自动安装，不需要提前准备。开发时使用的是 6.0.0-be.788。
 
 插件引用的 BepInEx 核心程序集与 `GameAssembly` 生成的 interop 程序集都来自游戏本身，不随仓库分发。因此插件必须在装了游戏和 BepInEx 的机器上编译。
 
@@ -84,17 +95,18 @@ PCFish 的繁育是一份重复劳动：打开功能窗口、翻仓库挑两条�
 
 ## 一键部署
 
-设置页里有两步部署，按顺序做即可：
+设置页的「一键部署」把运行前的准备一次做完：
 
-**BepInEx 运行环境**：点「检测/安装」。助手从官方构建站 builds.bepinex.dev 抓最新版本，
-按游戏运行时自动选包（PC FISH 是 IL2CPP，所以取 IL2CPP 的 Windows x64 版），解压到游戏根目录。
-已经装过时先显示当前版本，再问你要不要重新下载覆盖；覆盖前会把原有文件备份到游戏目录下的
-BepInEx-backup-时间戳 文件夹。
+1. 定位游戏目录（留空自动查找，找不到就点「浏览…」手动指定）
+2. 检测 BepInEx 运行环境；没有就从 builds.bepinex.dev 抓最新版本，按游戏运行时自动选包
+   （PC FISH 是 IL2CPP，取 BepInEx-Unity.IL2CPP-win-x64），解压到游戏根目录。
+   覆盖已装版本前，会把被覆盖的文件备份到游戏目录下的 BepInEx-backup-时间戳 文件夹。
+3. 把 PCFishAutoHelper.dll 复制到 BepInEx 的 plugins 目录
+4. 首次部署时启动一次游戏，等插件生成 pcfish.autohelper.cfg，然后自动关闭这个进程
+5. 打开 cfg 里的「允许外部执行动作」，并让端口与控制器一致
 
-**PCFish 插件与总闸**：点「一键部署」。它把插件复制到 BepInEx\plugins，打开游戏内配置里的
-动作总闸，并让端口与控制器一致。
-
-两步都需要先退出游戏：winhttp.dll 和插件 DLL 在游戏运行时被占用，无法覆盖。
+第 2、3 步要写游戏目录，所以开始前请退出游戏：winhttp.dll 和插件 DLL 在游戏运行时被占用。
+第 4 步启动的那次游戏由助手自己关掉，不需要手动干预。
 
 ## 版本更新
 
@@ -127,7 +139,7 @@ dotnet build .\pcfish-autohelper\AutoHelper.csproj -c Release -p:GameDir="D:\Ste
 
 ## 安装
 
-推荐用仓库根目录的一键脚本，它会编译插件、部署到游戏目录，并把游戏内的动作总闸打开：
+推荐用仓库根目录的脚本编译并部署，它会编译插件、装到游戏目录，并把游戏内的动作总闸打开：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\build-and-deploy.ps1 -GameDir "D:\SteamLibrary\steamapps\common\PC FISH"
@@ -135,13 +147,14 @@ powershell -ExecutionPolicy Bypass -File .\build-and-deploy.ps1 -GameDir "D:\Ste
 
 脚本会把插件和控制器一起准备好，并把 `PCFishAutoHelper.dll` 放在控制器旁边，这样界面里的「一键部署」按钮以后能直接找到它。省略 `-GameDir` 时会自动到 Steam 常见路径里找游戏。运行前请先退出游戏，插件 DLL 在游戏运行时被锁定。
 
-也可以手动安装：
+也可以让助手自己完成：
 
-1. 把 `PCFishAutoHelper.dll` 复制到 `BepInEx\plugins\`。
-2. 启动游戏一次，BepInEx 会生成 `BepInEx\config\pcfish.autohelper.cfg`。
-3. 双击运行控制器 `PCFishController.exe`。
-4. 打开控制器「设置」页，点「一键部署」。它会自动完成剩下的两步：把 cfg 里的「允许外部执行动作」改成 `true`，并让 cfg 的端口与控制器一致。
-5. 按提示重启游戏，然后在控制器上点「ARM」放行动作。
+1. 双击运行控制器 `PCFishController.exe`。
+2. 打开「设置」页，确认游戏目录（留空会自动查找），点「一键部署」。
+3. 看状态区跑完，按提示启动游戏。
+4. 在控制器上点「ARM」放行动作。
+
+想手工装也行：把 `PCFishAutoHelper.dll` 放进 `BepInEx\plugins\`，启动一次游戏让它生成 cfg，再把 cfg 里的「允许外部执行动作」改成 `true`。
 
 ## 繁育流程
 
@@ -153,7 +166,7 @@ powershell -ExecutionPolicy Bypass -File .\build-and-deploy.ps1 -GameDir "D:\Ste
 
 ## 常见问题
 
-控制器显示「桥接未连接」：游戏没开，或插件没装成功，或端口不一致。先确认 `BepInEx\LogOutput.log` 里有插件加载记录。
+控制器显示「桥接未连接」：游戏没开，或插件没装成功，或端口不一致。先确认 `BepInEx\LogOutput.log` 里有插件加载记录。刚装好 BepInEx 的机器第一次启动要先按 GameAssembly 生成 interop 程序集，插件可能要多等一两分钟才加载。
 
 繁育提示「发生网络错误」：这是游戏对业务错误的统一提示。打开控制器日志查看真实原因，常见情况是所选鱼在服务器端已无剩余繁育次数，正常情况下助手会在每轮开始前把它排除掉。
 

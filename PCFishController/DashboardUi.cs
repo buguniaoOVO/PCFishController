@@ -76,8 +76,6 @@ internal sealed partial class MainForm
     private readonly Label _deployStatus = new();
     private Button _deployButton;
     private Button _gameDirBrowse;
-    private readonly Label _bepInExStatus = new();
-    private Button _bepInExButton;
     private readonly Label _updateStatus = new();
     private Button _updateCheckButton;
     private Button _updateApplyButton;
@@ -1176,11 +1174,13 @@ internal sealed partial class MainForm
         AddPage(body, "settings", page);
         var deploy = Surface();
         deploy.Dock = DockStyle.Top;
-        deploy.Height = 366;
+        deploy.Height = 330;
         var deployTitle = Label("一键部署", 13, true);
         deployTitle.SetBounds(20, 14, 240, 34);
-        var deployNote = Label("自动找到游戏目录、安装插件，并打开游戏内的动作总闸。", 9, false, Muted);
-        deployNote.SetBounds(20, 46, 620, 24);
+        var deployNote = Label(
+            "一次点击完成运行前的全部准备：安装 BepInEx 运行环境、放入插件、生成并打开游戏内的动作总闸。",
+            9, false, Muted);
+        deployNote.SetBounds(20, 46, 900, 24);
         var gameDirLabel = Label("游戏目录", 10, true, Muted);
         gameDirLabel.SetBounds(22, 82, 110, 32);
         _gameDirBox.SetBounds(138, 81, 470, 32);
@@ -1193,8 +1193,8 @@ internal sealed partial class MainForm
         _gameDirBrowse.Click += (_, _) => BrowseGameDir();
         _deployButton = ActionButton("一键部署", Green);
         _deployButton.SetBounds(718, 80, 118, 34);
-        _deployButton.Click += (_, _) => RunDeploy();
-        _deployStatus.SetBounds(20, 120, 816, 62);
+        _deployButton.Click += async (_, _) => await RunDeployAsync();
+        _deployStatus.SetBounds(20, 120, 816, 76);
         _deployStatus.ForeColor = Muted;
         _deployStatus.Font = new Font("Microsoft YaHei UI", 9F);
         deploy.Controls.AddRange(new Control[]
@@ -1204,41 +1204,31 @@ internal sealed partial class MainForm
 
         // 版本更新：检查 GitHub 上的最新发布，由用户决定是否更新。
         var updateTitle = Label("版本更新", 10, true, Muted);
-        updateTitle.SetBounds(22, 196, 110, 28);
-        _updateStatus.SetBounds(138, 194, 560, 30);
+        updateTitle.SetBounds(22, 208, 110, 28);
+        _updateStatus.SetBounds(138, 206, 560, 30);
         _updateStatus.ForeColor = Muted;
         _updateStatus.Font = new Font("Microsoft YaHei UI", 9F);
         _updateCheckButton = ActionButton("检查更新");
-        _updateCheckButton.SetBounds(702, 191, 108, 34);
+        _updateCheckButton.SetBounds(702, 203, 108, 34);
         _updateCheckButton.Click += async (_, _) => await CheckForUpdateAsync();
         _updateApplyButton = ActionButton("立即更新", Green);
-        _updateApplyButton.SetBounds(816, 191, 108, 34);
+        _updateApplyButton.SetBounds(816, 203, 108, 34);
         _updateApplyButton.Enabled = false;
         _updateApplyButton.Visible = false;
         _updateApplyButton.Click += async (_, _) => await ApplyUpdateAsync();
         _updatePageButton = ActionButton("打开发布页");
-        _updatePageButton.SetBounds(22, 232, 148, 34);
+        _updatePageButton.SetBounds(22, 244, 148, 34);
         _updatePageButton.Click += (_, _) =>
         {
             UpdateChecker.OpenReleasesPage();
             _log.Write("已在浏览器中打开发布页：" + UpdateChecker.ReleasesPage);
         };
         var updateNote = Label("更新只替换程序文件，不会动你的配置和游戏数据。", 9, false, Muted);
-        updateNote.SetBounds(22, 274, 780, 26);
+        updateNote.SetBounds(22, 286, 780, 26);
 
-        // BepInEx 是插件的运行环境，没装的话插件不会被游戏加载。
-        var bepTitle = Label("BepInEx 运行环境", 10, true, Muted);
-        bepTitle.SetBounds(22, 310, 140, 28);
-        _bepInExStatus.SetBounds(166, 308, 530, 30);
-        _bepInExStatus.ForeColor = Muted;
-        _bepInExStatus.Font = new Font("Microsoft YaHei UI", 9F);
-        _bepInExButton = ActionButton("检测/安装");
-        _bepInExButton.SetBounds(702, 305, 222, 34);
-        _bepInExButton.Click += async (_, _) => await RunBepInExInstallAsync();
         deploy.Controls.AddRange(new Control[]
         {
-            updateTitle, _updateStatus, _updateCheckButton, _updateApplyButton, _updatePageButton, updateNote,
-            bepTitle, _bepInExStatus, _bepInExButton
+            updateTitle, _updateStatus, _updateCheckButton, _updateApplyButton, _updatePageButton, updateNote
         });
 
         var card = Surface();
@@ -1278,64 +1268,6 @@ internal sealed partial class MainForm
             if (_changingLanguage || _languageCombo.SelectedIndex < 0) return;
             ChangeLanguage(_languageCombo.SelectedIndex == 1 ? "en" : "zh");
         };
-    }
-
-    /// <summary>检测并按需安装 BepInEx 6。</summary>
-    private async Task RunBepInExInstallAsync()
-    {
-        var gameDir = GameDeploy.FindGameDir((_gameDirBox.Text ?? "").Trim());
-        if (gameDir == null)
-        {
-            _bepInExStatus.Text = UiLanguage.T("没找到游戏目录，请先在上面指定。");
-            _bepInExStatus.ForeColor = Pink;
-            return;
-        }
-
-        _bepInExButton.Enabled = false;
-        _bepInExStatus.ForeColor = Muted;
-        _bepInExStatus.Text = UiLanguage.T("正在检测 BepInEx…");
-        try
-        {
-            if (BepInExInstaller.IsInstalled(gameDir))
-            {
-                var current = BepInExInstaller.DescribeInstalled(gameDir);
-                var upgrade = MessageBox.Show(this,
-                    UiLanguage.T($"检测到 BepInEx 已安装（{current}）。是否重新下载并覆盖安装最新版？") + Environment.NewLine +
-                    UiLanguage.T("原有文件会先备份到游戏目录下的 BepInEx-backup-时间戳 文件夹。"),
-                    UiLanguage.T("BepInEx"),
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
-                if (upgrade != DialogResult.Yes)
-                {
-                    _bepInExStatus.Text = UiLanguage.T("BepInEx 已安装：") + current;
-                    _bepInExStatus.ForeColor = Green;
-                    return;
-                }
-            }
-
-            var progress = new List<string>();
-            void Report(string text)
-            {
-                progress.Add(text);
-                _bepInExStatus.Text = string.Join("  |  ", progress.TakeLast(2));
-                _log.Write("BepInEx：" + text);
-            }
-
-            var result = await BepInExInstaller.InstallAsync(gameDir, text => Ui(() => Report(text)));
-            foreach (var step in result.Steps) _log.Write("BepInEx：" + step);
-            _bepInExStatus.Text = result.Message;
-            _bepInExStatus.ForeColor = result.Ok ? Green : Gold;
-            _log.Write("BepInEx：" + result.Message);
-        }
-        catch (Exception ex)
-        {
-            _bepInExStatus.Text = UiLanguage.T("BepInEx 安装异常：") + ex.Message;
-            _bepInExStatus.ForeColor = Pink;
-            _log.Write("BepInEx 异常：" + ex.Message);
-        }
-        finally
-        {
-            _bepInExButton.Enabled = true;
-        }
     }
 
     /// <summary>检查 GitHub 上的最新发布。只查询，不下载。</summary>
@@ -1452,26 +1384,41 @@ internal sealed partial class MainForm
         _gameDirBox.Text = dialog.SelectedPath;
     }
 
-    /// <summary>一键部署：装插件 + 打开游戏内总闸 + 对齐端口。</summary>
-    private void RunDeploy()
+    /// <summary>
+    /// 一键部署：装齐运行环境（BepInEx）、放入插件、生成并打开游戏内的动作总闸。
+    /// 全程异步，安装过程会实时把每一步写进状态区，避免界面像卡住。
+    /// </summary>
+    private async Task RunDeployAsync()
     {
         _deployButton.Enabled = false;
+        _deployStatus.ForeColor = Muted;
+        _deployStatus.Text = UiLanguage.T("正在准备…");
+        var progress = new List<string>();
+        void Report(string text)
+        {
+            progress.Add(text);
+            _deployStatus.Text = string.Join(Environment.NewLine, progress.TakeLast(4));
+            _log.Write("一键部署：" + text);
+        }
+
         try
         {
-            var result = GameDeploy.Run((_gameDirBox.Text ?? "").Trim(), _settings.Port);
+            var result = await GameDeploy.RunAsync((_gameDirBox.Text ?? "").Trim(), _settings.Port,
+                text => Ui(() => Report(text)));
             var lines = new List<string>(result.Steps);
             lines.Add(result.Message);
-            _deployStatus.Text = string.Join(Environment.NewLine, lines);
+            _deployStatus.Text = string.Join(Environment.NewLine, lines.TakeLast(6));
             _deployStatus.ForeColor = result.Ok ? Green : Gold;
+            foreach (var step in result.Steps) _log.Write("一键部署：" + step);
+            _log.Write("一键部署：" + result.Message);
             if (!string.IsNullOrWhiteSpace(result.GameDir) && string.IsNullOrWhiteSpace(_settings.GameDir))
             {
                 _gameDirBox.Text = result.GameDir;
             }
-            foreach (var step in lines) _log.Write("一键部署：" + step);
         }
         catch (Exception ex)
         {
-            _deployStatus.Text = "一键部署失败：" + ex.Message;
+            _deployStatus.Text = UiLanguage.T("一键部署失败：") + ex.Message;
             _deployStatus.ForeColor = Pink;
             _log.Write("一键部署异常：" + ex.Message);
         }
