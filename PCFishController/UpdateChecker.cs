@@ -43,6 +43,9 @@ internal static class UpdateChecker
     private const string LatestReleaseApi =
         $"https://api.github.com/repos/{RepoOwner}/{RepoName}/releases/latest";
 
+    private const string LatestReleasePage =
+        $"https://github.com/{RepoOwner}/{RepoName}/releases/latest";
+
     internal static string ReleasesPage =>
         $"https://github.com/{RepoOwner}/{RepoName}/releases/latest";
 
@@ -86,9 +89,87 @@ internal static class UpdateChecker
         return Version.TryParse(text, out var version) ? version : null;
     }
 
+    /// <summary>
+    /// 读取 releases/latest 的 302 跳转，从 Location 里的 tag 得到最新版本。
+    /// 不使用 GitHub API，所以不会撞上未认证请求的每小时配额。
+    /// </summary>
+    private static async Task<string> ResolveLatestTagAsync()
+    {
+        using var handler = new HttpClientHandler
+        {
+            UseProxy = true,
+            AllowAutoRedirect = false
+        };
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+        client.DefaultRequestHeaders.UserAgent.ParseAdd($"PCFishController/{CurrentVersion}");
+        using var response = await client.GetAsync(LatestReleasePage);
+        var code = (int)response.StatusCode;
+        if (code is not (301 or 302 or 303 or 307 or 308)) return null;
+        var location = response.Headers.Location?.ToString();
+        if (string.IsNullOrWhiteSpace(location)) return null;
+        var tag = location.TrimEnd('/').Split('/')[^1];
+        var normalized = tag.TrimStart('v', 'V');
+        return Version.TryParse(normalized.Split('-')[0], out _) ? tag : null;
+    }
+
+    /// <summary>用 HEAD 请求探测压缩包大小，失败时返回 0。</summary>
+    private static async Task<long> ProbeSizeAsync(string url)
+    {
+        try
+        {
+            using var handler = new HttpClientHandler { UseProxy = true, AllowAutoRedirect = true };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(20) };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd($"PCFishController/{CurrentVersion}");
+            using var request = new HttpRequestMessage(HttpMethod.Head, url);
+            using var response = await client.SendAsync(request);
+            if (!response.IsSuccessStatusCode) return 0;
+            return response.Content.Headers.ContentLength ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
     internal static async Task<UpdateInfo> CheckAsync()
     {
         var info = new UpdateInfo { CurrentVersion = CurrentVersion };
+
+        // 首选：读取 releases/latest 的 302 跳转拿到版本号。
+        // 这条路不使用 API，因此不受每小时 60 次的未认证配额限制。
+        try
+        {
+            var tag = await ResolveLatestTagAsync();
+            if (!string.IsNullOrWhiteSpace(tag))
+            {
+                info.LatestTag = tag;
+                var latest = ParseTag(tag);
+                var current = ParseTag(CurrentVersion);
+                info.HasUpdate = latest != null && current != null && latest > current;
+                info.ReleaseUrl = $"https://github.com/{RepoOwner}/{RepoName}/releases/tag/{tag}";
+                info.AssetName = $"PCFishController-{tag}.zip";
+                info.AssetUrl = $"https://github.com/{RepoOwner}/{RepoName}/releases/download/{tag}/{info.AssetName}";
+                info.AssetSize = await ProbeSizeAsync(info.AssetUrl);
+                if (info.AssetSize <= 0)
+                {
+                    // 这个发布没有按约定命名的压缩包，让用户去发布页自己取。
+                    info.AssetUrl = "";
+                }
+                info.Ok = true;
+                info.Message = latest == null
+                    ? $"最新版本标记无法识别：{tag}"
+                    : info.HasUpdate
+                        ? $"发现新版本 {tag}，当前 {CurrentVersion}。"
+                        : $"已是最新版本（{CurrentVersion}）。";
+                return info;
+            }
+        }
+        catch
+        {
+            // 落到 API 方式
+        }
+
+        // 备用：GitHub API。配额用尽或网络异常时返回可读的错误信息。
         try
         {
             using var client = CreateClient();
