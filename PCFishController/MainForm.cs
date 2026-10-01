@@ -104,6 +104,9 @@ internal sealed partial class MainForm : Form
     private DateTime _lastServerAuditAt = DateTime.MinValue;
     private DateTime _serverAuditRequestedAt;
     private DateTime _serverAuditRetryAt;
+    private DateTime _serverAuditLogAt = DateTime.MinValue;
+    private string _serverAuditWaitReason = "";
+    private int _serverAuditBusyCount;
     private int _actionWaitSeconds;
 
     /// <summary>发起繁殖前的鱼群快照。繁殖成功后拿它做对照，把"到底消耗了什么"打出来。</summary>
@@ -131,7 +134,7 @@ internal sealed partial class MainForm : Form
 
         _log.LineWritten += OnLogLine;
         _goalPlan = GoalPlanner.Build(_settings.GoalType, _settings.GoalStar, _collectionTypes, _lastFish);
-        _log.Write(UiLanguage.T($"=== PCFish助手 v0.22.0 启动 ===（桥接端口 {_settings.Port}）"));
+        _log.Write(UiLanguage.T($"=== PCFish助手 v0.22.1 启动 ===（桥接端口 {_settings.Port}）"));
         _log.Write(UiLanguage.T($"配置文件：{AppSettings.FilePath}"));
         _log.Write(UiLanguage.T($"繁育节奏：每 {_settings.BreedIntervalMinSeconds / 60}~{_settings.BreedIntervalMaxSeconds / 60} 分钟检查，现有繁育计数器逐次用完"));
         _log.Write(UiLanguage.T("本程序不操作鼠标键盘、不向游戏窗口画任何东西。"));
@@ -419,6 +422,9 @@ internal sealed partial class MainForm : Form
                 _serverAuditPending = false;
                 _armAfterServerAudit = false;
                 _beginRoundAfterServerAudit = false;
+                _serverAuditWaitReason = "";
+                _serverAuditLogAt = DateTime.MinValue;
+                _serverAuditBusyCount = 0;
                 _statePending = false;
                 _awaitingBreed = false;
                 _preBreedSnapshot = null;
@@ -459,7 +465,22 @@ internal sealed partial class MainForm : Form
         _serverAuditRetryAt = DateTime.MinValue;
         _serverAuditRequestedAt = DateTime.Now;
         _client.Send("SERVERAUDIT");
-        _log.Write("正在只读核对服务器繁育次数，核对完成后再选鱼。");
+
+        // 游戏刚启动时登录和首个网络请求还没走完，桥接会连续回 busy，控制器每 3 秒重试。
+        // 那种情况下这条日志会被刷成几百行，把真正有用的信息淹掉。改成节流：首次一定打，
+        // 之后每 30 秒最多一条，并把桥接给出的等待原因带上。
+        if (_serverAuditWaitReason.Length > 0)
+        {
+            if ((DateTime.Now - _serverAuditLogAt).TotalSeconds < 30) return;
+            _log.Write("仍在只读核对服务器繁育次数：" + _serverAuditWaitReason);
+        }
+        else
+        {
+            if (_serverAuditLogAt != DateTime.MinValue &&
+                (DateTime.Now - _serverAuditLogAt).TotalSeconds < 30) return;
+            _log.Write("正在只读核对服务器繁育次数，核对完成后再选鱼。");
+        }
+        _serverAuditLogAt = DateTime.Now;
     }
 
     private void RequestState()
@@ -512,13 +533,13 @@ internal sealed partial class MainForm : Form
         switch (msg.type)
         {
             case "hello":
-                _bridgeVersionOk = msg.ver == "0.22.0";
+                _bridgeVersionOk = msg.ver == "0.22.1";
                 _readOnlyMode = false;
                 _bridgeMinInterval = Math.Max(60, msg.minInterval);
                 _bridgeAllowsActions = msg.cfg;
                 _log.Write($"桥接版本 {msg.ver}，最小动作间隔 {_bridgeMinInterval} 秒，" +
                            (msg.cfg ? "游戏内已放行动作" : "游戏内 cfg 尚未放行动作"));
-                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.22.0）不匹配，已阻止动作。");
+                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.22.1）不匹配，已阻止动作。");
                 _chkAuto.Enabled = _bridgeVersionOk;
                 _chkAutoUpgrade.Enabled = _bridgeVersionOk;
                 _btnOnce.Enabled = _bridgeVersionOk;
@@ -694,7 +715,12 @@ internal sealed partial class MainForm : Form
             {
                 if (msg.errorKind == "busy")
                 {
-                    _serverAuditRetryAt = DateTime.Now.AddSeconds(3);
+                    _serverAuditWaitReason = msg.msg ?? "";
+                    // 游戏还在登录时这会是连续 busy。固定 3 秒重试在启动阶段会连打几十次，
+                    // 改成逐步退避，最大 30 秒，既不影响登录完成后的速度，也不再压着游戏问。
+                    _serverAuditBusyCount++;
+                    var backoff = Math.Min(30, 3 * _serverAuditBusyCount);
+                    _serverAuditRetryAt = DateTime.Now.AddSeconds(backoff);
                     return;
                 }
                 _actionPauseReason = "服务器次数核对失败，点击 ARM 重新核对";
@@ -704,6 +730,8 @@ internal sealed partial class MainForm : Form
                 return;
             }
             _lastServerAuditAt = DateTime.Now;
+            _serverAuditWaitReason = "";
+            _serverAuditBusyCount = 0;
             try
             {
                 using var report = JsonDocument.Parse(msg.msg);

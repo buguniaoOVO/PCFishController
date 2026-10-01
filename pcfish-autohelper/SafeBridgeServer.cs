@@ -55,6 +55,7 @@ internal static class BridgeServer
     private static DateTime _pendingBreedAt = DateTime.MinValue;
     private static bool _pendingBreedTimeoutReported;
     private static int _actions;
+    private static DateTime _lastBusyLogAt = DateTime.MinValue;
 
     // ---------- 窗口内容自检 ----------
     //
@@ -497,7 +498,21 @@ internal static class BridgeServer
     private static void Reply(Request request, string command, bool ok, bool isNew, string id, string message,
         string errorKind = "")
     {
-        Journal.Write($"{command} 结果：ok={ok} {message}");
+        // busy 是「现在还不能做，等会儿再来」的常规回复：游戏刚启动、登录还没走完时，
+        // 控制器每几秒重试一次。每次都写会把日志刷成几百行，把真正有用的信息淹掉。
+        // 只对 busy 节流，其它结果照常记录。
+        if (errorKind == "busy")
+        {
+            if ((DateTime.UtcNow - _lastBusyLogAt).TotalSeconds >= 30)
+            {
+                _lastBusyLogAt = DateTime.UtcNow;
+                Journal.Write($"{command} 结果：ok={ok} {message}（同类提示 30 秒内只记一条）");
+            }
+        }
+        else
+        {
+            Journal.Write($"{command} 结果：ok={ok} {message}");
+        }
         request.Client?.Out.Enqueue("{\"type\":\"result\",\"cmd\":" + Q(command)
             + ",\"ok\":" + B(ok) + ",\"isNew\":" + B(isNew)
             + ",\"id\":" + Q(id) + ",\"msg\":" + Q(message) + ",\"errorKind\":" + Q(errorKind) + "}");

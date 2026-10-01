@@ -168,6 +168,8 @@ powershell -ExecutionPolicy Bypass -File .\build-and-deploy.ps1 -GameDir "D:\Ste
 
 控制器显示「桥接未连接」：游戏没开，或插件没装成功，或端口不一致。先确认 `BepInEx\LogOutput.log` 里有插件加载记录。刚装好 BepInEx 的机器第一次启动要先按 GameAssembly 生成 interop 程序集，插件可能要多等一两分钟才加载。
 
+游戏弹出「服务器正在维护中」：这是游戏自己的提示。它的网络请求超时后，会把结果统一显示成维护或网络错误。游戏日志 `%USERPROFILE%\AppData\LocalLow\NANOO COMPANY Inc_\PCFish\Player.log` 里能看到真实原因，例如 `Curl error 28: Connection timed out`。遇到时先确认网络通畅，再重启游戏。
+
 繁育提示「发生网络错误」：这是游戏对业务错误的统一提示。打开控制器日志查看真实原因，常见情况是所选鱼在服务器端已无剩余繁育次数，正常情况下助手会在每轮开始前把它排除掉。
 
 打开功能窗口后只有图标、内容空白、按键无反应：这是旧版本遗留的输入锁问题，当前版本已通过补齐原生收尾解决。若仍遇到，请把控制器日志一并提交。
