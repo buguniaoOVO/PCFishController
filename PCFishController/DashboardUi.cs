@@ -76,6 +76,8 @@ internal sealed partial class MainForm
     private readonly Label _deployStatus = new();
     private Button _deployButton;
     private Button _gameDirBrowse;
+    private readonly Label _bepInExStatus = new();
+    private Button _bepInExButton;
     private readonly Label _updateStatus = new();
     private Button _updateCheckButton;
     private Button _updateApplyButton;
@@ -1174,7 +1176,7 @@ internal sealed partial class MainForm
         AddPage(body, "settings", page);
         var deploy = Surface();
         deploy.Dock = DockStyle.Top;
-        deploy.Height = 310;
+        deploy.Height = 366;
         var deployTitle = Label("一键部署", 13, true);
         deployTitle.SetBounds(20, 14, 240, 34);
         var deployNote = Label("自动找到游戏目录、安装插件，并打开游戏内的动作总闸。", 9, false, Muted);
@@ -1223,9 +1225,20 @@ internal sealed partial class MainForm
         };
         var updateNote = Label("更新只替换程序文件，不会动你的配置和游戏数据。", 9, false, Muted);
         updateNote.SetBounds(22, 274, 780, 26);
+
+        // BepInEx 是插件的运行环境，没装的话插件不会被游戏加载。
+        var bepTitle = Label("BepInEx 运行环境", 10, true, Muted);
+        bepTitle.SetBounds(22, 310, 140, 28);
+        _bepInExStatus.SetBounds(166, 308, 530, 30);
+        _bepInExStatus.ForeColor = Muted;
+        _bepInExStatus.Font = new Font("Microsoft YaHei UI", 9F);
+        _bepInExButton = ActionButton("检测/安装");
+        _bepInExButton.SetBounds(702, 305, 222, 34);
+        _bepInExButton.Click += async (_, _) => await RunBepInExInstallAsync();
         deploy.Controls.AddRange(new Control[]
         {
-            updateTitle, _updateStatus, _updateCheckButton, _updateApplyButton, _updatePageButton, updateNote
+            updateTitle, _updateStatus, _updateCheckButton, _updateApplyButton, _updatePageButton, updateNote,
+            bepTitle, _bepInExStatus, _bepInExButton
         });
 
         var card = Surface();
@@ -1265,6 +1278,64 @@ internal sealed partial class MainForm
             if (_changingLanguage || _languageCombo.SelectedIndex < 0) return;
             ChangeLanguage(_languageCombo.SelectedIndex == 1 ? "en" : "zh");
         };
+    }
+
+    /// <summary>检测并按需安装 BepInEx 6。</summary>
+    private async Task RunBepInExInstallAsync()
+    {
+        var gameDir = GameDeploy.FindGameDir((_gameDirBox.Text ?? "").Trim());
+        if (gameDir == null)
+        {
+            _bepInExStatus.Text = UiLanguage.T("没找到游戏目录，请先在上面指定。");
+            _bepInExStatus.ForeColor = Pink;
+            return;
+        }
+
+        _bepInExButton.Enabled = false;
+        _bepInExStatus.ForeColor = Muted;
+        _bepInExStatus.Text = UiLanguage.T("正在检测 BepInEx…");
+        try
+        {
+            if (BepInExInstaller.IsInstalled(gameDir))
+            {
+                var current = BepInExInstaller.DescribeInstalled(gameDir);
+                var upgrade = MessageBox.Show(this,
+                    UiLanguage.T($"检测到 BepInEx 已安装（{current}）。是否重新下载并覆盖安装最新版？") + Environment.NewLine +
+                    UiLanguage.T("原有文件会先备份到游戏目录下的 BepInEx-backup-时间戳 文件夹。"),
+                    UiLanguage.T("BepInEx"),
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (upgrade != DialogResult.Yes)
+                {
+                    _bepInExStatus.Text = UiLanguage.T("BepInEx 已安装：") + current;
+                    _bepInExStatus.ForeColor = Green;
+                    return;
+                }
+            }
+
+            var progress = new List<string>();
+            void Report(string text)
+            {
+                progress.Add(text);
+                _bepInExStatus.Text = string.Join("  |  ", progress.TakeLast(2));
+                _log.Write("BepInEx：" + text);
+            }
+
+            var result = await BepInExInstaller.InstallAsync(gameDir, text => Ui(() => Report(text)));
+            foreach (var step in result.Steps) _log.Write("BepInEx：" + step);
+            _bepInExStatus.Text = result.Message;
+            _bepInExStatus.ForeColor = result.Ok ? Green : Gold;
+            _log.Write("BepInEx：" + result.Message);
+        }
+        catch (Exception ex)
+        {
+            _bepInExStatus.Text = UiLanguage.T("BepInEx 安装异常：") + ex.Message;
+            _bepInExStatus.ForeColor = Pink;
+            _log.Write("BepInEx 异常：" + ex.Message);
+        }
+        finally
+        {
+            _bepInExButton.Enabled = true;
+        }
     }
 
     /// <summary>检查 GitHub 上的最新发布。只查询，不下载。</summary>
