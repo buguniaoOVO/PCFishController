@@ -54,6 +54,7 @@ internal sealed partial class MainForm
     private readonly Label _lblSynthesisUpdated = new();
     private readonly DataGridView _synthesisGrid = new();
     private readonly ComboBox _languageCombo = new();
+    private readonly ComboBox _closeBehaviorCombo = new();
 
     /// <summary>界面右下角显示的版本号，取自程序集，改版本只需改 csproj。</summary>
     private static string AppVersion
@@ -1170,7 +1171,7 @@ internal sealed partial class MainForm
 
     private void BuildSettings(Panel body)
     {
-        var page = new Panel();
+        var page = new Panel { AutoScroll = true };
         AddPage(body, "settings", page);
         var deploy = Surface();
         deploy.Dock = DockStyle.Top;
@@ -1233,7 +1234,7 @@ internal sealed partial class MainForm
 
         var card = Surface();
         card.Dock = DockStyle.Top;
-        card.Height = 220;
+        card.Height = 260;
         var title = Label("设置", 13, true);
         title.SetBounds(20, 16, 240, 34);
         var languageLabel = Label("界面语言", 10, true, Muted);
@@ -1249,9 +1250,22 @@ internal sealed partial class MainForm
         languageNote.SetBounds(138, 105, 470, 26);
         var closeTitle = Label("关闭按钮", 10, true, Muted);
         closeTitle.SetBounds(22, 157, 110, 28);
-        var closeNote = Label("关闭窗口时可退出助手，或缩小到系统托盘继续运行。", 9, false, Muted);
-        closeNote.SetBounds(138, 157, 590, 30);
-        card.Controls.AddRange(new Control[] { title, languageLabel, _languageCombo, languageNote, closeTitle, closeNote });
+        _closeBehaviorCombo.SetBounds(138, 153, 250, 34);
+        _closeBehaviorCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _closeBehaviorCombo.FlatStyle = FlatStyle.Flat;
+        _closeBehaviorCombo.BackColor = InputBg;
+        _closeBehaviorCombo.ForeColor = White;
+        _closeBehaviorCombo.Items.AddRange(new object[] { "每次询问", "直接退出助手", "缩小至托盘" });
+        _closeBehaviorCombo.SelectedIndex = _settings.CloseBehavior switch { "exit" => 1, "tray" => 2, _ => 0 };
+        _closeBehaviorCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_changingLanguage || _closeBehaviorCombo.SelectedIndex < 0) return;
+            _settings.CloseBehavior = _closeBehaviorCombo.SelectedIndex switch { 1 => "exit", 2 => "tray", _ => "ask" };
+            _settings.Save();
+        };
+        var closeNote = Label("点击右上角 X 时按此设置执行，选择后自动保存。托盘模式下助手继续运行。", 9, false, Muted);
+        closeNote.SetBounds(138, 191, 640, 46);
+        card.Controls.AddRange(new Control[] { title, languageLabel, _languageCombo, languageNote, closeTitle, _closeBehaviorCombo, closeNote });
         // Dock.Top 的排列顺序是后添加的在上，所以先加语言卡、后加部署卡，一键部署才会在页面顶部。
         page.Controls.Add(card);
         page.Controls.Add(deploy);

@@ -15,6 +15,9 @@ internal sealed class AppSettings
     /// <summary>界面语言，zh 表示简体中文，en 表示 English。</summary>
     public string Language { get; set; } = "zh";
 
+    /// <summary>关闭按钮：ask 每次询问，exit 退出，tray 缩小至托盘。</summary>
+    public string CloseBehavior { get; set; } = "ask";
+
     /// <summary>自动繁育总开关。</summary>
     public bool AutoBreed { get; set; }
 

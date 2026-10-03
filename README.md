@@ -1,4 +1,11 @@
+<p align="center">
+  <img src="docs/afdian-support.jpg" alt="扫码为阿丸好饿发电" width="280">
+  <a href="https://github.com/buguniaoOVO/PCFishController"><img src="docs/star-support.png" alt="给 PCFish 助手点个 Star" width="280"></a>
+</p>
+
 # PCFish 助手（BepInEx 插件 + 独立控制器）
+
+English: [README.en.md](README.en.md)
 
 挂机养鱼游戏 PCFish 的后台助手。繁育和鱼缸升级交给程序代跑，游戏窗口在后台或被别的窗口盖住时照常工作，不占用你的鼠标和键盘。
 
@@ -45,7 +52,7 @@ PCFish 的繁育是一份重复劳动：打开功能窗口、翻仓库挑两条�
 - 仓库：鱼种、稀有度、星级、剩余繁育次数、冷却时间、状态；支持搜索、筛选和点列头排序
 - 合成路线：按 Wiki Season 1 配方列出材料与数量，用颜色区分缺少数量、数量达标、可合成
 - 图鉴与目标：设定目标鱼种和星级，自动展开下层的合成路线
-- 日志与设置，界面支持中英文切换
+- 日志与设置，界面支持中英文切换；关闭按钮可设为每次询问、直接退出或缩小至托盘
 - 每个页面右下角显示版本号和作者
 
 ### 一键部署
@@ -180,11 +187,7 @@ powershell -ExecutionPolicy Bypass -File .\build-and-deploy.ps1 -GameDir "D:\Ste
 
 这个助手免费开源。如果它帮你省下了守着繁育的时间，可以请作者喝杯奶茶。
 
-<p align="center">
-  <img src="docs/afdian-support.jpg" alt="爱发电：阿丸好饿" width="360">
-</p>
-
-<p align="center">扫码「为我发电」支持作者</p>
+扫码页首的发电图支持作者，也可以在仓库页面点 Star。
 
 ## 运行时文件
 

@@ -267,7 +267,13 @@ internal sealed partial class MainForm : Form
         }
 
         e.Cancel = true;
-        switch (AskCloseChoice())
+        var choice = _settings.CloseBehavior switch
+        {
+            "exit" => CloseChoice.Exit,
+            "tray" => CloseChoice.MinimizeToTray,
+            _ => AskCloseChoice()
+        };
+        switch (choice)
         {
             case CloseChoice.Exit:
                 _allowClose = true;

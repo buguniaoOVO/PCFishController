@@ -18,6 +18,15 @@ class Checks {
   var trackerType=tracker.GetType();
   void Track(string name,params object[] args)=>trackerType.GetMethod(name,flags).Invoke(tracker,args);
   bool Active()=>(bool)trackerType.GetProperty("Active",flags).GetValue(tracker);
+  var closeCombo=(ComboBox)Get("_closeBehaviorCombo");
+  closeCombo.SelectedIndex=2;
+  Call("ChangeLanguage","en");
+  Check(closeCombo.SelectedIndex==2 && closeCombo.Items[2].ToString()=="Minimize to System Tray","language switch preserves the selected close action");
+  var settingsType=asm.GetType("PCFishController.AppSettings");
+  var reload=settingsType.GetMethod("Load",BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,null);
+  Check((string)settingsType.GetProperty("CloseBehavior").GetValue(reload)=="tray","close action persists across settings reload");
+  closeCombo.SelectedIndex=0;
+  Call("ChangeLanguage","zh");
   var fishType=asm.GetType("PCFishController.FishDto");
   var listType=typeof(List<>).MakeGenericType(fishType);
   string before="""[{"id":"a","ty":"FS00001","sp":"FS00001_01_01_01","bc":2,"bm":2,"tier":1,"stars":1},{"id":"b","ty":"FS00002","sp":"FS00002_01_01_01","bc":2,"bm":2,"tier":1,"stars":1}]""";
