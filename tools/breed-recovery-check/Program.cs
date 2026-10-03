@@ -69,4 +69,3 @@ var callback=NativeBreedingApi.CreateCallback((result,isNew,id)=>{
 NativeBreedingApi.Send(new NN.PF.Core.Network.NetworkManager(),new[]{"a","b"},callback);
 Check(ui.Finished,"native completion is found by signature");
 Console.WriteLine("All recovery checks passed.");
-
