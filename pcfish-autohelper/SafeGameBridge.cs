@@ -40,7 +40,7 @@ internal static class GameBridge
 {
     private static readonly ConcurrentQueue<Action> MainThreadWork = new();
     private static readonly ConcurrentQueue<(DateTime Due, Action Work)> DelayedMainThreadWork = new();
-    private static Il2CppSystem.Action<bool, bool, string> _pendingCallback;
+    private static object _pendingCallback;
     private static BreedEvidence _evidence;
 
     private sealed class BreedEvidence
@@ -398,26 +398,27 @@ internal static class GameBridge
         }
 
         var pair = new[] { ids[0], ids[1] };
+        var enteringNativeRequest = false;
         try
         {
             var evidence = new BreedEvidence();
             _evidence = evidence;
-            var managed = new Action<bool, bool, string>((ok, isNew, newId) =>
+            var managed = new Action<object, bool, string>((nativeResult, isNew, newId) =>
                 RunOnMainThread(() =>
                 {
                     var deferred = false;
                     try
                     {
-                        if (!ok)
+                        if (!NativeBreedingApi.IsSuccess(nativeResult))
                         {
                             onResult?.Invoke(false, isNew, newId,
                                 "繁育未完成：" + evidence.Describe() + "；保留游戏错误提示，停止本轮",
-                                evidence.FailureKind);
+                                evidence.TransportFailure ? "transport" : "server");
                             return;
                         }
                         // 回调计算经验时使用亲鱼数组，必须绑定本笔实际双亲。
                         ui.parentFishList = new Il2CppStringArray(pair);
-                        ui._Breed_b__20_2(true, isNew, newId);
+                        NativeBreedingApi.Finish(ui, nativeResult, isNew, newId);
                         var uiCleanup = FinishBreedUi(ui);
                         if (!TryGetDataManager(out var latest))
                             throw new InvalidOperationException("回包后本地数据管理器不可用");
@@ -439,7 +440,7 @@ internal static class GameBridge
                             var interaction = ReadInteractionState();
                             // Confirm 会经 PlayUI 暂时锁输入，等待游戏自己的防连点时段结束。
                             if (interaction.InputBlocked && !interaction.NetworkBusy &&
-                                !interaction.WindowOpen && attempt < 8)
+                                !interaction.WindowOpen && attempt < 40)
                             {
                                 DelayedMainThreadWork.Enqueue((DateTime.UtcNow.AddMilliseconds(250),
                                     () => CheckSettled(attempt + 1)));
@@ -476,13 +477,22 @@ internal static class GameBridge
                     }
                     finally { if (!deferred) { _pendingCallback = null; _evidence = null; } }
                 }));
-            _pendingCallback = DelegateSupport.ConvertDelegate<Il2CppSystem.Action<bool, bool, string>>(managed);
-            net.FishBreed(new Il2CppStringArray(pair), _pendingCallback);
+            _pendingCallback = NativeBreedingApi.CreateCallback(managed);
+            enteringNativeRequest = true;
+            NativeBreedingApi.Send(net, pair, _pendingCallback);
             reason = "已发送繁育请求，等待服务端回包";
             return true;
         }
         catch (Exception ex)
         {
+            var cause = ex.GetBaseException();
+            if (enteringNativeRequest && cause is not MissingMethodException && cause is not TypeLoadException)
+            {
+                // 原生入口中途抛错时仍可能回包，保留回调直到最终结果。
+                Journal.Error("原生繁育入口结果待核对", ex);
+                reason = "原生入口尚未确认，等待回包核对";
+                return true;
+            }
             _pendingCallback = null;
             _evidence = null;
             Journal.Error("发送繁育请求失败", ex);

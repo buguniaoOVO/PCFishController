@@ -20,7 +20,7 @@ public class Plugin : BasePlugin
 {
     public const string PluginGuid = "pcfish.autohelper";
     public const string PluginName = "PC FISH Auto Helper (Bridge)";
-    public const string PluginVersion = "0.22.2";
+    public const string PluginVersion = "0.23.0";
 
     internal static ManualLogSource Logger;
     internal static Plugin Instance;
@@ -56,12 +56,14 @@ public class Plugin : BasePlugin
             Journal.Write("繁育网络旁路诊断已启用");
         }
         catch (Exception ex) { Journal.Error("网络诊断加载失败，动作保持关闭", ex); }
-        BridgeServer.Configure(CfgAllowActions.Value && diagnosticsReady, CfgMinActionInterval.Value, CfgPort.Value);
+        var apiReady = NativeBreedingApi.Validate(out var apiDetail);
+        Journal.Write(apiDetail);
+        BridgeServer.Configure(CfgAllowActions.Value && diagnosticsReady && apiReady, CfgMinActionInterval.Value, CfgPort.Value);
 
         AddComponent<AutoHelperBehaviour>();
 
         Log.LogInfo($"{PluginName} v{PluginVersion} 已加载：桥接端口={CfgPort.Value}、" +
-                    $"放行动作={CfgAllowActions.Value && diagnosticsReady}。繁育使用原生完整收尾。");
+                    $"放行动作={CfgAllowActions.Value && diagnosticsReady && apiReady}。繁育使用原生完整收尾。");
     }
 }
 

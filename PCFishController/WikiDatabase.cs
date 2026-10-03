@@ -75,7 +75,7 @@ internal static class WikiDatabase
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(12) };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("PCFish助手/0.17 Wiki refresh");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("PCFishController/" + UpdateChecker.CurrentVersion + " (Wiki refresh)");
             var html = await client.GetStringAsync(_data.SourceUrl);
             var required = new[] { "Frostblue Sunfish", "Limeback Sea Turtle", "Matsuri Octopus" };
             var missing = required.Where(x => !html.Contains(x, StringComparison.OrdinalIgnoreCase)).ToList();

@@ -66,6 +66,9 @@ internal sealed partial class MainForm : Form
     private DateTime _breedSettleAt = DateTime.MinValue;
     private bool _roundActive;
     private bool _awaitingBreed;
+    private readonly BreedRequestTracker _breedRequest = new();
+    private DateTime _nextBreedStatusAt = DateTime.MinValue;
+    private bool _recoverAfterBreedVerification;
     private DateTime _breedRequestedAt = DateTime.MinValue;
     private bool _upgradePending;
     private bool _awaitingUpgrade;
@@ -145,7 +148,7 @@ internal sealed partial class MainForm : Form
 
         _log.LineWritten += OnLogLine;
         _goalPlan = GoalPlanner.Build(_settings.GoalType, _settings.GoalStar, _collectionTypes, _lastFish);
-        _log.Write(UiLanguage.T($"=== PCFish助手 v0.22.2 启动 ===（桥接端口 {_settings.Port}）"));
+        _log.Write(UiLanguage.T($"=== PCFish助手 v0.23.0 启动 ===（桥接端口 {_settings.Port}）"));
         _log.Write(UiLanguage.T($"配置文件：{AppSettings.FilePath}"));
         _log.Write(UiLanguage.T($"繁育节奏：每 {_settings.BreedIntervalMinSeconds / 60}~{_settings.BreedIntervalMaxSeconds / 60} 分钟检查，现有繁育计数器逐次用完"));
         _log.Write(UiLanguage.T("本程序不操作鼠标键盘、不向游戏窗口画任何东西。"));
@@ -295,6 +298,7 @@ internal sealed partial class MainForm : Form
             }
             else
             {
+                _autoResumeAt = DateTime.MinValue;
                 SendArm(false);
                 _roundActive = false;
                 _upgradePending = false;
@@ -346,7 +350,7 @@ internal sealed partial class MainForm : Form
             RequestState();
         };
 
-        _btnArm.Click += (_, _) => SendArm(!_armed);
+        _btnArm.Click += (_, _) => { _autoResumeAt = DateTime.MinValue; SendArm(!_armed); };
 
         _btnHud.Click += (_, _) =>
         {
@@ -438,9 +442,17 @@ internal sealed partial class MainForm : Form
                 _serverAuditBusyCount = 0;
                 _autoResumeAt = DateTime.MinValue;
                 _statePending = false;
-                _awaitingBreed = false;
-                _preBreedSnapshot = null;
-                _pendingParentA = _pendingParentB = _pendingNewFishId = null;
+                if (_breedRequest.Active)
+                {
+                    _breedRequest.MarkTimeout();
+                    _actionPauseReason = "连接中断，正在自动核对本笔繁育结果";
+                }
+                else
+                {
+                    _awaitingBreed = false;
+                    _preBreedSnapshot = null;
+                    _pendingParentA = _pendingParentB = _pendingNewFishId = null;
+                }
                 EndRound();
                 _log.Write("桥接断开（游戏没开、或插件没装）。2 秒后自动重试。");
             }
@@ -450,6 +462,12 @@ internal sealed partial class MainForm : Form
 
     private void SendArm(bool on)
     {
+        if (on && _breedRequest.Active)
+        {
+            RequestBreedStatus();
+            _log.Write("本笔繁育仍在对账，核实完成后恢复。");
+            return;
+        }
         if (on && !_bridgeVersionOk)
         {
             _armed = false;
@@ -509,6 +527,23 @@ internal sealed partial class MainForm : Form
         _client.Send("STATE");
     }
 
+    private void RequestBreedStatus()
+    {
+        if (!_client.Connected || !_breedRequest.Waiting || DateTime.Now < _nextBreedStatusAt) return;
+        _nextBreedStatusAt = DateTime.Now.AddSeconds(15);
+        _client.Send("BREEDSTATUS " + _breedRequest.Id);
+    }
+
+    private void WaitForBreedResult()
+    {
+        _breedRequest.MarkTimeout();
+        _actionPauseReason = "回包较慢，正在自动核对本笔繁育结果";
+        _autoResumeAt = DateTime.MinValue;
+        SendArm(false);
+        EndRound();
+        RequestBreedStatus();
+    }
+
     private void SendUpgrade()
     {
         if (!_client.Connected)
@@ -547,18 +582,25 @@ internal sealed partial class MainForm : Form
         switch (msg.type)
         {
             case "hello":
-                _bridgeVersionOk = msg.ver == "0.22.2";
+                if (!string.IsNullOrWhiteSpace(msg.apiStatus)) _log.Write(msg.apiStatus);
+                _bridgeVersionOk = msg.ver == "0.23.0";
                 _readOnlyMode = false;
                 _bridgeMinInterval = Math.Max(60, msg.minInterval);
                 _bridgeAllowsActions = msg.cfg;
                 _log.Write($"桥接版本 {msg.ver}，最小动作间隔 {_bridgeMinInterval} 秒，" +
                            (msg.cfg ? "游戏内已放行动作" : "游戏内 cfg 尚未放行动作"));
-                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.22.2）不匹配，已阻止动作。");
+                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.23.0）不匹配，已阻止动作。");
                 _chkAuto.Enabled = _bridgeVersionOk;
                 _chkAutoUpgrade.Enabled = _bridgeVersionOk;
                 _btnOnce.Enabled = _bridgeVersionOk;
                 _btnUpgrade.Enabled = _bridgeVersionOk;
                 _btnArm.Enabled = _bridgeVersionOk;
+                if (_breedRequest.Active)
+                {
+                    RequestBreedStatus();
+                    if (!_breedRequest.Waiting) RequestState();
+                    break;
+                }
                 if (_bridgeVersionOk && _bridgeAllowsActions && _chkAuto.Checked &&
                     string.IsNullOrEmpty(_actionPauseReason))
                 {
@@ -639,9 +681,14 @@ internal sealed partial class MainForm : Form
                 if (!msg.ok)
                 {
                     _log.Write("鱼群请求失败：" + msg.msg);
-                    _preBreedSnapshot = null;
-                    _pendingParentA = _pendingParentB = _pendingNewFishId = null;
+                    if (!_breedRequest.Active)
+                    {
+                        _preBreedSnapshot = null;
+                        _pendingParentA = _pendingParentB = _pendingNewFishId = null;
+                    }
                     EndRound();
+                    if (_breedRequest.Active && !_breedRequest.Waiting)
+                        _breedSettleAt = DateTime.Now.AddSeconds(15);
                     break;
                 }
                 _lastFish = msg.fish ?? new List<FishDto>();
@@ -661,7 +708,7 @@ internal sealed partial class MainForm : Form
                     _lblFish.Text = UiLanguage.T("鱼群：" + Selection.Summarize(_lastFish));
                 });
                 _log.Write($"收到鱼群：{Selection.Summarize(_lastFish)}");
-                if (_preBreedSnapshot != null)
+                if (_preBreedSnapshot != null && !_awaitingBreed)
                 {
                     var before = _preBreedSnapshot;
                     var bornIds = new List<string>();
@@ -686,6 +733,10 @@ internal sealed partial class MainForm : Form
                         _log.Write($"繁育核实失败：亲鱼和本笔新鱼均无变化（心 {_preBreedCharge}→{_charge}），本轮停止；不计入成功次数。");
                         _preBreedSnapshot = null;
                         _pendingParentA = _pendingParentB = _pendingNewFishId = null;
+                        _breedRequest.Clear();
+                        _recoverAfterBreedVerification = false;
+                        _actionPauseReason = "本笔鱼群变化未核实，请检查游戏状态";
+                        SendArm(false);
                         EndRound();
                         break;
                     }
@@ -709,6 +760,17 @@ internal sealed partial class MainForm : Form
                     _pendingNewFishId = null;
                     _log.Write($"繁育核实成功：本笔亲鱼次数下降或新鱼已出现，本轮第 {_roundAttempts} 次（心 {_preBreedCharge}→{_charge}）。");
                     _roundSuccesses++;
+                    _breedRequest.Clear();
+                    if (_recoverAfterBreedVerification)
+                    {
+                        _recoverAfterBreedVerification = false;
+                        _actionPauseReason = "";
+                        _lastServerAuditAt = DateTime.MinValue;
+                        _serverInventoryReady = false;
+                        _nextCheckAt = DateTime.Now;
+                        if (_chkAuto.Checked) _autoResumeAt = DateTime.Now;
+                        _log.Write("迟到回包已核实，自动恢复繁育检查。");
+                    }
                 }
                 if (_roundActive) MaybeBreed(_lastFish);
                 break;
@@ -781,10 +843,18 @@ internal sealed partial class MainForm : Form
             return;
         }
 
-        if (msg.cmd != "breed" || !_awaitingBreed) return;
+        if (msg.cmd != "breed" || !_breedRequest.Accept(msg.requestId, msg.terminal && msg.errorKind != "uncertain")) return;
+        if (!msg.terminal || msg.errorKind == "uncertain")
+        {
+            if (_actionPauseReason != "回包较慢，正在自动核对本笔繁育结果")
+                _log.Write("繁育回包较慢，保留本笔记录，自动等待最终结果。");
+            WaitForBreedResult();
+            return;
+        }
         _awaitingBreed = false;
         if (msg.ok)
         {
+            _recoverAfterBreedVerification = _breedRequest.TimedOut;
             _pendingNewFishId = msg.id;
             _log.Write($"繁育回包报告成功：{msg.msg}；等待鱼群核实。");
             _breedSettleAt = DateTime.Now.AddSeconds(3);
@@ -796,6 +866,7 @@ internal sealed partial class MainForm : Form
             _preBreedSnapshot = null;
             _pendingParentA = _pendingParentB = _pendingNewFishId = null;
             _breedSettleAt = DateTime.MinValue;
+            _breedRequest.Clear();
             if (msg.errorKind == "busy" && _roundActive)
             {
                 _nextActionAt = DateTime.Now.AddSeconds(15);
@@ -803,14 +874,10 @@ internal sealed partial class MainForm : Form
             }
             if (!string.IsNullOrEmpty(msg.errorKind))
             {
-                _actionPauseReason = msg.errorKind == "uncertain"
-                    ? "本笔结果未知，等待游戏回包后点击 ARM 恢复"
-                    : "请求或收尾失败，确认游戏恢复后点击 ARM 继续";
-                // 结果未知时不能自动重发（可能造成重复繁育），等用户确认。
-                // 结果明确的失败只是这一笔没成，退避一段时间后自己继续即可。
-                _autoResumeAt = msg.errorKind == "uncertain"
-                    ? DateTime.MinValue
-                    : DateTime.Now.AddSeconds(180);
+                var retryable = msg.errorKind is "transport" or "not_sent";
+                _actionPauseReason = retryable ? "本笔已结束，等待网络恢复后重新核对" : "游戏接口或收尾异常：" + msg.msg;
+                _autoResumeAt = retryable ? DateTime.Now.AddSeconds(180) : DateTime.MinValue;
+                _serverInventoryReady = false;
                 SendArm(false);
                 _log.Write("自动动作已暂停；保留游戏提示，不换鱼重发，也不将网络失败计入亲鱼黑名单。");
                 if (_autoResumeAt != DateTime.MinValue)
@@ -822,7 +889,7 @@ internal sealed partial class MainForm : Form
 
     private void BeginRound()
     {
-        if (_roundActive || _awaitingBreed) return;
+        if (_roundActive || _awaitingBreed || _breedRequest.Active) return;
         if (!_serverInventoryReady || (DateTime.Now - _lastServerAuditAt).TotalSeconds > 60)
         {
             _beginRoundAfterServerAudit = true;
@@ -847,7 +914,8 @@ internal sealed partial class MainForm : Form
         _breedSettleAt = DateTime.MinValue;
         RollNextInterval();
         _nextCheckAt = DateTime.Now.AddSeconds(_nextIntervalSeconds);
-        _log.Write($"本轮结束，约 {_nextIntervalSeconds / 60.0:F1} 分钟后再次检查繁育计数器。");
+        _log.Write(_actionPauseReason.Length > 0 ? "本轮结束：" + _actionPauseReason
+            : $"本轮结束，约 {_nextIntervalSeconds / 60.0:F1} 分钟后再次检查繁育计数器。");
 
         if (!_chkAutoUpgrade.Checked || _roundSuccesses == 0) return;
         if (!EnsureReadyForAction(quiet: true)) return;
@@ -910,11 +978,18 @@ internal sealed partial class MainForm : Form
     {
         UpdateStatusLabels();
         UpdateWarehouseCountdowns();
+        if (_breedRequest.Waiting && _breedRequest.TimedOut) RequestBreedStatus();
+        if (_breedRequest.Active && !_breedRequest.Waiting && !_statePending &&
+            _breedSettleAt != DateTime.MinValue && DateTime.Now >= _breedSettleAt)
+        {
+            _breedSettleAt = DateTime.MinValue;
+            RequestState();
+        }
 
         // 瞬时网络失败会自动恢复：暂停只影响这一笔，不该让挂机永久停摆。
         if (_autoResumeAt != DateTime.MinValue && DateTime.Now >= _autoResumeAt &&
             !_armed && !_roundActive && !_awaitingBreed && _chkAuto.Checked &&
-            _client.Connected && _bridgeVersionOk && !_windowLocked)
+            _client.Connected && _bridgeVersionOk && !_windowLocked && !_gameBusy && !_breedRequest.Active)
         {
             _autoResumeAt = DateTime.MinValue;
             _actionPauseReason = "";
@@ -941,17 +1016,13 @@ internal sealed partial class MainForm : Form
             _statePending = false;
             _log.Write("鱼群状态请求超时，本轮停止，等待下次检查。");
             EndRound();
+            if (_breedRequest.Active && !_breedRequest.Waiting)
+                _breedSettleAt = DateTime.Now.AddSeconds(15);
         }
-        if (_awaitingBreed && (DateTime.Now - _breedRequestedAt).TotalSeconds > 35)
+        if (_awaitingBreed && !_breedRequest.TimedOut && (DateTime.Now - _breedRequestedAt).TotalSeconds > 35)
         {
-            _awaitingBreed = false;
-            _preBreedSnapshot = null;
-            _pendingParentA = null;
-            _pendingParentB = null;
-            _log.Write("繁育结果超时，停止本轮；不会重复发送未知结果的请求。");
-            _actionPauseReason = "本笔结果未知，等待游戏回包后点击 ARM 恢复";
-            SendArm(false);
-            EndRound();
+            _log.Write("繁育回包较慢，保留本笔记录，自动等待最终结果。");
+            WaitForBreedResult();
         }
 
         if (_upgradePending && !_awaitingUpgrade && !_roundActive && !_gameBusy && _actionWaitSeconds <= 0 &&
@@ -991,6 +1062,11 @@ internal sealed partial class MainForm : Form
 
     private bool EnsureReadyForAction(bool quiet = false)
     {
+        if (_breedRequest.Active)
+        {
+            if (!quiet) _log.Write("正在核对本笔繁育结果。");
+            return false;
+        }
         if (_readOnlyMode)
         {
             if (!quiet) _log.Write("连接核查版只提供状态读取，繁育和升级已暂停。");
@@ -1083,7 +1159,8 @@ internal sealed partial class MainForm : Form
         _awaitingBreed = true;
         _breedRequestedAt = DateTime.Now;
         _roundAttempts++;
-        _client.Send($"BREED {a.id} {b.id}");
+        _breedRequest.Begin(Guid.NewGuid().ToString("N"));
+        _client.Send($"BREED {_breedRequest.Id} {a.id} {b.id}");
         _lastActionAt = DateTime.Now;
     }
 

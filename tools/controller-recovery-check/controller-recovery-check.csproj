@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+<PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0-windows</TargetFramework><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>enable</ImplicitUsings></PropertyGroup>
+<ItemGroup><Reference Include="PCFishController"><HintPath>../../PCFishController/bin/Release/net8.0-windows/win-x64/PCFishController.dll</HintPath></Reference></ItemGroup>
+</Project>

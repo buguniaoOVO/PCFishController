@@ -8,6 +8,7 @@ internal sealed class BridgeMessage
 {
     public string type { get; set; }
     public string ver { get; set; }
+    public string apiStatus { get; set; }
     public int port { get; set; }
     public int minInterval { get; set; }
 
@@ -17,6 +18,9 @@ internal sealed class BridgeMessage
     public string id { get; set; }
     public string msg { get; set; }
     public string errorKind { get; set; }
+    public string requestId { get; set; } = "";
+    public bool terminal { get; set; } = true;
+    public bool breedPending { get; set; }
     public bool gameBusy { get; set; }
     public bool inputBlocked { get; set; }
     public bool networkBusy { get; set; }

@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><NoWarn>CS0649</NoWarn><DefineConstants Condition="'$(Legacy)'=='true'">LEGACY</DefineConstants></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../PCFishController/BreedRequestTracker.cs" Link="BreedRequestTracker.cs" />
+    <Compile Include="../../pcfish-autohelper/SafeBridgeServer.cs" Link="SafeBridgeServer.cs" />
+    <Compile Include="../../pcfish-autohelper/NativeBreedingApi.cs" Link="NativeBreedingApi.cs" />
+  </ItemGroup>
+</Project>

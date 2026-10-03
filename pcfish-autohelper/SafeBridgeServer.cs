@@ -38,6 +38,7 @@ internal static class BridgeServer
         internal Client Client;
         internal string Command;
         internal string[] Args;
+        internal string RequestId = "";
     }
 
     private static readonly ConcurrentQueue<Request> Inbox = new();
@@ -55,6 +56,8 @@ internal static class BridgeServer
     private static DateTime _pendingBreedAt = DateTime.MinValue;
     private static bool _pendingBreedTimeoutReported;
     private static int _actions;
+    private static readonly Dictionary<string, string> BreedResults = new();
+    private static readonly Queue<string> BreedResultIds = new();
     private static DateTime _lastBusyLogAt = DateTime.MinValue;
 
     // ---------- 窗口内容自检 ----------
@@ -84,7 +87,19 @@ internal static class BridgeServer
     internal static void Pump()
     {
         if (!_started && !_startFailed) Start();
-        for (var i = 0; i < 16 && Inbox.TryDequeue(out var request); i++) Handle(request);
+        for (var i = 0; i < 16 && Inbox.TryDequeue(out var request); i++)
+        {
+            try { Handle(request); }
+            catch (Exception ex)
+            {
+                Journal.Error("桥接命令执行失败：" + request.Command, ex);
+                var pending = request.Command == "BREED" && GameBridge.HasPendingBreed;
+                if (!pending && _pendingBreed == request) _pendingBreed = null;
+                Reply(request, request.Command.ToLowerInvariant(), false, false, "",
+                    "游戏入口执行失败：" + ex.GetBaseException().Message,
+                    pending ? "uncertain" : "compatibility", terminal: !pending);
+            }
+        }
         if (_pendingBreed != null && !_pendingBreedTimeoutReported &&
             (DateTime.UtcNow - _pendingBreedAt).TotalSeconds > 25)
         {
@@ -92,7 +107,7 @@ internal static class BridgeServer
             _armed = false;
             // 保留本笔请求占位，迟到回包收尾前不能开始下一笔。
             Reply(_pendingBreed, "breed", false, false, "",
-                "服务端回包超时，结果未知；动作已暂停，仍等待本笔回包收尾", "uncertain");
+                "服务端回包较慢，正在等待本笔结果并自动核对", "uncertain", terminal: false);
         }
         if ((DateTime.UtcNow - _lastTickAt).TotalSeconds >= 1)
         {
@@ -211,6 +226,15 @@ internal static class BridgeServer
         switch (request.Command)
         {
             case "STATE": request.Client.Out.Enqueue(BuildState()); return;
+            case "BREEDSTATUS":
+                request.RequestId = request.Args.Length > 0 ? request.Args[0] : "";
+                if (BreedResults.TryGetValue(request.RequestId, out var completed))
+                    request.Client.Out.Enqueue(completed);
+                else if (_pendingBreed != null && _pendingBreed.RequestId == request.RequestId)
+                    Reply(request, "breed", false, false, "", "本笔仍在等待游戏回包", "uncertain", terminal: false);
+                else
+                    Reply(request, "breed", false, false, "", "桥接未找到本笔记录，保持暂停等待核对", "uncertain", terminal: false);
+                return;
             case "SERVERAUDIT":
                 if (!ServerInventoryCache.Refresh((ok, report) =>
                     Reply(request, "serveraudit", ok, false, "", report),
@@ -311,9 +335,22 @@ internal static class BridgeServer
 
     private static void StartBreed(Request request)
     {
+        // 三个参数时第一个是请求编号；旧客户端的双亲格式仍可读取。
+        if (request.Args.Length == 3)
+        {
+            request.RequestId = request.Args[0];
+            request.Args = request.Args[1..];
+        }
+        if (request.RequestId.Length > 0 && BreedResults.TryGetValue(request.RequestId, out var completed))
+        {
+            request.Client.Out.Enqueue(completed);
+            return;
+        }
         if (_pendingBreed != null)
         {
-            Reply(request, "breed", false, false, "", "上一笔繁育仍在等待结果");
+            var same = request.RequestId.Length > 0 && request.RequestId == _pendingBreed.RequestId;
+            Reply(request, "breed", false, false, "", "上一笔繁育仍在等待结果",
+                same ? "uncertain" : "busy", terminal: !same);
             return;
         }
         if (!ActionAllowed(request, "breed")) return;
@@ -322,6 +359,7 @@ internal static class BridgeServer
         // 这是「不碰 UI」原则的保险丝：真出副作用就锁停，不让它累积成窗口废掉。
         _preActionWindow = _windowCheckEnabled ? WindowGuard.Snapshot() : default;
 
+        _pendingBreed = request;
         if (!GameBridge.StartBreed(request.Args, (ok, isNew, id, message, errorKind) =>
         {
             if (_pendingBreed != request) return;
@@ -332,10 +370,10 @@ internal static class BridgeServer
             Reply(request, "breed", ok, isNew, id, warned == null ? message : message + "；" + warned, errorKind);
         }, out var reason))
         {
-            Reply(request, "breed", false, false, "", reason);
+            _pendingBreed = null;
+            Reply(request, "breed", false, false, "", reason, "not_sent");
             return;
         }
-        _pendingBreed = request;
         _pendingBreedTimeoutReported = false;
         _pendingBreedAt = DateTime.UtcNow;
         _lastActionAt = DateTime.UtcNow;
@@ -385,7 +423,7 @@ internal static class BridgeServer
     private static string Hello()
         => "{\"type\":\"hello\",\"ver\":" + Q(Plugin.PluginVersion)
            + ",\"port\":" + _port + ",\"cfg\":" + B(_allowed)
-           + ",\"minInterval\":" + _minInterval + "}";
+             + ",\"minInterval\":" + _minInterval + ",\"breedStatusSupported\":true,\"apiStatus\":" + Q(NativeBreedingApi.Detail) + "}";
 
     private static string BuildTick()
     {
@@ -411,7 +449,9 @@ internal static class BridgeServer
                + ",\"inputBlocked\":" + B(interaction.InputBlocked)
                + ",\"networkBusy\":" + B(interaction.NetworkBusy)
                + ",\"functionWindowOpen\":" + B(interaction.WindowOpen)
-               + ",\"serverInventoryReady\":" + B(ServerInventoryCache.Ready)
+                + ",\"serverInventoryReady\":" + B(ServerInventoryCache.Ready)
+                + ",\"breedPending\":" + B(_pendingBreed != null)
+                + ",\"pendingRequestId\":" + Q(_pendingBreed?.RequestId ?? "")
                + ",\"actionWaitSeconds\":" + Math.Max(0,
                    (int)Math.Ceiling(_minInterval - (DateTime.UtcNow - _lastActionAt).TotalSeconds))
                + ",\"windowLocked\":" + B(_windowLocked)
@@ -496,7 +536,7 @@ internal static class BridgeServer
     }
 
     private static void Reply(Request request, string command, bool ok, bool isNew, string id, string message,
-        string errorKind = "")
+        string errorKind = "", bool terminal = true)
     {
         // busy 是「现在还不能做，等会儿再来」的常规回复：游戏刚启动、登录还没走完时，
         // 控制器每几秒重试一次。每次都写会把日志刷成几百行，把真正有用的信息淹掉。
@@ -513,9 +553,17 @@ internal static class BridgeServer
         {
             Journal.Write($"{command} 结果：ok={ok} {message}");
         }
-        request.Client?.Out.Enqueue("{\"type\":\"result\",\"cmd\":" + Q(command)
+        var json = "{\"type\":\"result\",\"cmd\":" + Q(command)
             + ",\"ok\":" + B(ok) + ",\"isNew\":" + B(isNew)
-            + ",\"id\":" + Q(id) + ",\"msg\":" + Q(message) + ",\"errorKind\":" + Q(errorKind) + "}");
+              + ",\"id\":" + Q(id) + ",\"msg\":" + Q(message) + ",\"errorKind\":" + Q(errorKind)
+              + ",\"requestId\":" + Q(request.RequestId) + ",\"terminal\":" + B(terminal) + "}";
+        if (command == "breed" && terminal && request.RequestId.Length > 0)
+        {
+            if (!BreedResults.ContainsKey(request.RequestId)) BreedResultIds.Enqueue(request.RequestId);
+            BreedResults[request.RequestId] = json;
+            while (BreedResultIds.Count > 16) BreedResults.Remove(BreedResultIds.Dequeue());
+        }
+        request.Client?.Out.Enqueue(json);
     }
 
     private static void Broadcast(string message)
