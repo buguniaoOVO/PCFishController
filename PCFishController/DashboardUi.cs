@@ -13,12 +13,12 @@ internal sealed partial class MainForm
     private static readonly Color Gold = Color.FromArgb(190, 119, 20);
     private static readonly Color Pink = Color.FromArgb(184, 71, 100);
     private static readonly Color InputBg = Color.FromArgb(241, 245, 249);
-    private static readonly Color MissingText = Color.FromArgb(155, 83, 8);
-    private static readonly Color MissingFill = Color.FromArgb(255, 244, 217);
-    private static readonly Color SufficientText = Color.FromArgb(39, 91, 158);
-    private static readonly Color SufficientFill = Color.FromArgb(232, 241, 255);
-    private static readonly Color CraftableText = Color.FromArgb(23, 112, 68);
-    private static readonly Color CraftableFill = Color.FromArgb(228, 246, 234);
+    private static readonly Color MissingText = Color.FromArgb(169, 107, 0);
+    private static readonly Color MissingFill = Color.FromArgb(255, 240, 190);
+    private static readonly Color SufficientText = Color.FromArgb(0, 82, 174);
+    private static readonly Color SufficientFill = Color.FromArgb(224, 237, 255);
+    private static readonly Color CraftableText = Color.FromArgb(8, 123, 58);
+    private static readonly Color CraftableFill = Color.FromArgb(211, 245, 224);
 
     private readonly Dictionary<string, Button> _navButtons = new();
     private readonly Dictionary<string, Panel> _pages = new();
@@ -26,6 +26,8 @@ internal sealed partial class MainForm
     private readonly Label _lblPageTitle = new();
     private readonly Label _lblPageSubtitle = new();
     private readonly Label _lblHeaderConnection = new();
+    private readonly Label _lblRunState = new();
+    private Button _btnStartAll, _btnStopAll;
     private readonly Label _lblOverviewFish = new();
     private readonly Label _lblOverviewReady = new();
     private readonly Label _lblOverviewHeart = new();
@@ -48,8 +50,10 @@ internal sealed partial class MainForm
     private readonly RichTextBox _txtCollectionList = new();
     private bool _updatingGoalOptions;
     private readonly ComboBox _synthesisTargetCombo = new();
+    private readonly HashSet<string> _craftableSeasonalTypes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ComboBox _synthesisStarCombo = new();
     private readonly Label _lblSynthesisTarget = new();
+    private readonly Label _lblSynthesisStatus = new();
     private readonly Label _lblSynthesisSource = new();
     private readonly Label _lblSynthesisUpdated = new();
     private readonly DataGridView _synthesisGrid = new();
@@ -101,7 +105,8 @@ internal sealed partial class MainForm
         => new()
         {
             Text = UiLanguage.T(caption), Width = 148, Height = 38, FlatStyle = FlatStyle.Flat,
-            BackColor = color ?? Color.FromArgb(232, 238, 247), ForeColor = White,
+            BackColor = color ?? Color.FromArgb(232, 238, 247),
+            ForeColor = color.HasValue && color != Gold && color.Value.GetBrightness() < 0.5F ? Color.White : White,
             Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold),
             Cursor = Cursors.Hand, Margin = new Padding(0, 0, 10, 10)
         };
@@ -177,10 +182,38 @@ internal sealed partial class MainForm
         _lblHeaderConnection.TextAlign = ContentAlignment.MiddleCenter;
         _lblHeaderConnection.ForeColor = Muted;
         _lblHeaderConnection.BackColor = Card;
-        _lblHeaderConnection.Size = new Size(124, 32);
-        _lblHeaderConnection.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        header.Resize += (_, _) => _lblHeaderConnection.Location = new Point(header.ClientSize.Width - 130, 27);
-        header.Controls.AddRange(new Control[] { _lblPageTitle, _lblPageSubtitle, _lblHeaderConnection });
+        _lblHeaderConnection.Size = new Size(112, 34);
+        _lblHeaderConnection.Margin = new Padding(0, 0, 8, 0);
+        _lblRunState.Size = new Size(112, 34);
+        _lblRunState.TextAlign = ContentAlignment.MiddleCenter;
+        _lblRunState.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+        _lblRunState.Margin = new Padding(0, 0, 8, 0);
+        _btnStartAll = ActionButton("一键开启", Color.FromArgb(255, 214, 108));
+        _btnStartAll.Size = new Size(110, 34);
+        _btnStartAll.Margin = new Padding(0, 0, 8, 0);
+        _btnStartAll.Click += (_, _) => StartAllAutomation();
+        _btnStopAll = ActionButton("全部关闭", Color.FromArgb(45, 63, 87));
+        _btnStopAll.ForeColor = Color.White;
+        _btnStopAll.Size = new Size(110, 34);
+        _btnStopAll.Margin = Padding.Empty;
+        _btnStopAll.Click += (_, _) => StopAllAutomation();
+        var runControls = new FlowLayoutPanel
+        {
+            Size = new Size(478, 36), WrapContents = false, BackColor = Color.Transparent,
+            FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty
+        };
+        runControls.Controls.AddRange(new Control[] { _lblRunState, _lblHeaderConnection, _btnStartAll, _btnStopAll });
+        void PlaceRunControls()
+        {
+            var compact = header.ClientSize.Width < 800;
+            header.Height = compact ? 132 : 102;
+            runControls.Location = new Point(Math.Max(0, header.ClientSize.Width - runControls.Width), compact ? 82 : 27);
+            _lblPageTitle.Width = compact ? 360 : Math.Max(180, runControls.Left - 16);
+            _lblPageSubtitle.Width = compact ? header.ClientSize.Width : Math.Max(180, runControls.Left - 16);
+        }
+        header.Resize += (_, _) => PlaceRunControls();
+        header.Controls.AddRange(new Control[] { _lblPageTitle, _lblPageSubtitle, runControls });
+        PlaceRunControls();
 
         var body = new Panel { Dock = DockStyle.Fill, BackColor = Bg };
 
@@ -620,9 +653,13 @@ internal sealed partial class MainForm
         _synthesisTargetCombo.FlatStyle = FlatStyle.Flat;
         _synthesisTargetCombo.BackColor = InputBg;
         _synthesisTargetCombo.ForeColor = White;
+        _synthesisTargetCombo.DrawMode = DrawMode.OwnerDrawFixed;
+        _synthesisTargetCombo.ItemHeight = 26;
+        _synthesisTargetCombo.DropDownWidth = 380;
+        _synthesisTargetCombo.DrawItem += DrawSynthesisTarget;
         _synthesisTargetCombo.DisplayMember = "DisplayName";
         _synthesisTargetCombo.ValueMember = "Code";
-        var seasonalTargets = FishCatalog.Species.Where(x => x.Season == 1).ToList();
+        var seasonalTargets = FishCatalog.Species.Where(x => x.Season > 0).ToList();
         _synthesisTargetCombo.DataSource = seasonalTargets;
         _synthesisType = seasonalTargets.Any(x => string.Equals(x.Code, _settings.GoalType, StringComparison.OrdinalIgnoreCase))
             ? _settings.GoalType
@@ -650,7 +687,11 @@ internal sealed partial class MainForm
         refreshWiki.SetBounds(800, 50, 135, 36);
         refreshWiki.Click += async (_, _) => await RefreshWikiDatabaseAsync();
         _lblSynthesisTarget.SetBounds(18, 90, 270, 24);
+        _lblSynthesisTarget.AutoEllipsis = true;
         _lblSynthesisTarget.ForeColor = White;
+        _lblSynthesisStatus.SetBounds(245, 12, 150, 28);
+        _lblSynthesisStatus.TextAlign = ContentAlignment.MiddleCenter;
+        _lblSynthesisStatus.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
         _lblSynthesisSource.SetBounds(300, 90, 610, 24);
         _lblSynthesisSource.ForeColor = Muted;
         _lblSynthesisUpdated.SetBounds(576, 113, 330, 20);
@@ -662,7 +703,26 @@ internal sealed partial class MainForm
         sufficientLegend.SetBounds(320, 111, 100, 23);
         var craftableLegend = LegendBadge("可合成", CraftableText, CraftableFill);
         craftableLegend.SetBounds(426, 111, 140, 23);
-        toolbar.Controls.AddRange(new Control[] { title, targetLabel, _synthesisTargetCombo, starLabel, _synthesisStarCombo, setGoal, refreshRoute, refreshWiki, _lblSynthesisTarget, _lblSynthesisSource, _lblSynthesisUpdated, missingLegend, sufficientLegend, craftableLegend });
+        toolbar.Controls.AddRange(new Control[] { title, _lblSynthesisStatus, targetLabel, _synthesisTargetCombo, starLabel, _synthesisStarCombo, setGoal, refreshRoute, refreshWiki, _lblSynthesisTarget, _lblSynthesisSource, _lblSynthesisUpdated, missingLegend, sufficientLegend, craftableLegend });
+        void PlaceSynthesisControls()
+        {
+            var compact = toolbar.ClientSize.Width < 950;
+            toolbar.Height = compact ? 207 : 160;
+            setGoal.Location = new Point(compact ? 18 : 515, compact ? 92 : 50);
+            refreshRoute.Location = new Point(compact ? 171 : 665, compact ? 92 : 50);
+            refreshWiki.Location = new Point(compact ? 305 : 800, compact ? 92 : 50);
+            var nameY = compact ? 138 : 93;
+            _lblSynthesisTarget.Location = new Point(18, nameY);
+            _lblSynthesisSource.SetBounds(300, nameY, Math.Max(200, toolbar.ClientSize.Width - 318), 24);
+            var legendY = compact ? 173 : 126;
+            missingLegend.Location = new Point(compact ? 18 : 210, legendY);
+            sufficientLegend.Location = new Point(compact ? 130 : 320, legendY);
+            craftableLegend.Location = new Point(compact ? 238 : 426, legendY);
+            var updatedX = compact ? 396 : 576;
+            _lblSynthesisUpdated.SetBounds(updatedX, legendY, Math.Max(160, toolbar.ClientSize.Width - updatedX - 18), 23);
+        }
+        toolbar.Resize += (_, _) => PlaceSynthesisControls();
+        PlaceSynthesisControls();
 
         _synthesisTargetCombo.SelectedValueChanged += (_, _) => SynthesisSelectionChanged();
         _synthesisStarCombo.SelectedIndexChanged += (_, _) => SynthesisSelectionChanged();
@@ -701,6 +761,7 @@ internal sealed partial class MainForm
         _synthesisGrid.Columns.Add(new DataGridViewButtonColumn { Name = "target", HeaderText = "目标", UseColumnTextForButtonValue = false });
         foreach (DataGridViewColumn col in _synthesisGrid.Columns) col.SortMode = DataGridViewColumnSortMode.NotSortable;
         _synthesisGrid.Columns["fish"].FillWeight = 175;
+        _synthesisGrid.Columns["fish"].MinimumWidth = 170;
         _synthesisGrid.Columns["star"].FillWeight = 58;
         _synthesisGrid.Columns["count"].FillWeight = 58;
         _synthesisGrid.Columns["role"].FillWeight = 115;
@@ -731,9 +792,33 @@ internal sealed partial class MainForm
         RefreshSynthesisPage();
     }
 
+    private void DrawSynthesisTarget(object sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || e.Index >= _synthesisTargetCombo.Items.Count) return;
+        if (_synthesisTargetCombo.Items[e.Index] is not FishSpecies species) return;
+        var ready = _craftableSeasonalTypes.Contains(species.Code);
+        var selected = (e.State & DrawItemState.Selected) != 0;
+        var fill = ready ? CraftableFill : selected ? FishQualityPalette.SelectedBackground : FishQualityPalette.Background;
+        var textColor = ready ? CraftableText : GradeColor(species.Tier);
+        using var brush = new SolidBrush(fill);
+        e.Graphics.FillRectangle(brush, e.Bounds);
+        var text = species.DisplayName + (ready ? " · " + UiLanguage.T("可合成") : "");
+        var rect = new Rectangle(e.Bounds.Left + 6, e.Bounds.Top, e.Bounds.Width - 10, e.Bounds.Height);
+        TextRenderer.DrawText(e.Graphics, text, e.Font, rect, textColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+        e.DrawFocusRectangle();
+    }
+
     private void RefreshSynthesisPage()
     {
         if (_synthesisGrid == null) return;
+        var fish = _lastFish ?? new List<FishDto>();
+        _craftableSeasonalTypes.Clear();
+        foreach (var species in FishCatalog.Species.Where(s => s.Season > 0))
+            if (SynthesisPlanner.CanCraftNow(species.Code, _synthesisStar, fish)) _craftableSeasonalTypes.Add(species.Code);
+        _synthesisTargetCombo.Invalidate();
+        var stock = fish.GroupBy(f => (Type: f.ty ?? "", Star: f.Stars))
+            .ToDictionary(g => g.Key, g => (Owned: g.Count(), Available: g.Count(Selection.CanMerge)));
         if (string.IsNullOrWhiteSpace(_synthesisType))
             _synthesisType = "FS00033";
         _synthesisRoute = SynthesisPlanner.Build(_synthesisType, _synthesisStar);
@@ -741,6 +826,16 @@ internal sealed partial class MainForm
         _lblSynthesisTarget.Text = UiLanguage.T(target == null
             ? "请选择路线目标"
             : $"当前路线：{target.DisplayName}　{StarText(_synthesisRoute.TargetStar)}");
+        var targetReady = _craftableSeasonalTypes.Contains(_synthesisType);
+        stock.TryGetValue((_synthesisType, _synthesisRoute.TargetStar), out var selectedTargetStock);
+        var selectedTargetOwned = selectedTargetStock.Owned > 0;
+        if (targetReady) _lblSynthesisTarget.Text += " · " + UiLanguage.T("可合成");
+        _lblSynthesisTarget.BackColor = targetReady ? CraftableFill : FishQualityPalette.Background;
+        _lblSynthesisTarget.ForeColor = targetReady ? CraftableText : GradeColor(target?.Tier ?? 0);
+        _lblSynthesisTarget.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+        _lblSynthesisStatus.Text = UiLanguage.T(targetReady ? "可合成" : selectedTargetOwned ? "已拥有" : "材料未齐");
+        _lblSynthesisStatus.ForeColor = targetReady ? CraftableText : selectedTargetOwned ? SufficientText : MissingText;
+        _lblSynthesisStatus.BackColor = targetReady ? CraftableFill : selectedTargetOwned ? SufficientFill : MissingFill;
         _lblSynthesisSource.Text = UiLanguage.T(_synthesisRoute.SourceText);
         _lblSynthesisUpdated.Text = UiLanguage.T(_lastStateAt == DateTime.MinValue
             ? "仓库同步：等待游戏数据"
@@ -748,7 +843,6 @@ internal sealed partial class MainForm
 
         _synthesisGrid.Rows.Clear();
         var known = new HashSet<string>(_collectionTypes ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
-        var fish = _lastFish ?? new List<FishDto>();
         var routeRows = _synthesisRoute.Rows.ToList();
         var children = Enumerable.Range(0, routeRows.Count).Select(_ => new List<int>()).ToArray();
         for (var parent = 0; parent < routeRows.Count; parent++)
@@ -757,8 +851,6 @@ internal sealed partial class MainForm
                 if (routeRows[child].Depth == routeRows[parent].Depth + 1) children[parent].Add(child);
         }
 
-        var stock = fish.GroupBy(f => (Type: f.ty ?? "", Star: f.Stars))
-            .ToDictionary(g => g.Key, g => (Owned: g.Count(), Available: g.Count(Selection.CanMerge)));
         var readyCache = new bool?[routeRows.Count];
         bool CanSupply(int index)
         {
@@ -785,12 +877,7 @@ internal sealed partial class MainForm
         bool CanCraftNow(int index)
         {
             if (!_synthesisRoute.Exact || children[index].Count == 0) return false;
-            return children[index].All(childIndex =>
-            {
-                var ingredient = routeRows[childIndex];
-                stock.TryGetValue((ingredient.Type, ingredient.Star), out var available);
-                return available.Available >= ingredient.Count;
-            });
+            return SynthesisPlanner.CanCraftNow(routeRows[index].Type, routeRows[index].Star, fish);
         }
 
         for (var rowIndex = 0; rowIndex < routeRows.Count; rowIndex++)
@@ -804,31 +891,29 @@ internal sealed partial class MainForm
             var craftableNow = CanCraftNow(rowIndex);
             var targetOwned = routeRow.Role == "目标鱼" && count.Owned > 0;
             var shortage = Math.Max(0, routeRow.Count - count.Available);
-            var isReady = targetOwned || craftableNow;
+            var isReady = craftableNow;
             var color = !_synthesisRoute.Exact && !targetOwned ? Muted
                 : isReady ? CraftableText
-                : quantityMet ? SufficientText
+                : quantityMet || targetOwned ? SufficientText
                 : MissingText;
             var rowFill = !_synthesisRoute.Exact && !targetOwned ? Card
                 : isReady ? Color.FromArgb(249, 253, 250)
-                : quantityMet ? Color.FromArgb(249, 251, 255)
+                : quantityMet || targetOwned ? Color.FromArgb(249, 251, 255)
                 : Color.FromArgb(255, 252, 245);
             var badgeFill = !_synthesisRoute.Exact && !targetOwned ? InputBg
                 : isReady ? CraftableFill
-                : quantityMet ? SufficientFill
+                : quantityMet || targetOwned ? SufficientFill
                 : MissingFill;
-            var roleState = targetOwned ? UiLanguage.T("已拥有")
-                : craftableNow ? UiLanguage.T("可合成")
+            var roleState = craftableNow ? UiLanguage.T("可合成")
+                : targetOwned ? UiLanguage.T("已拥有")
                 : quantityMet ? UiLanguage.T("数量达标")
                 : canSupply ? UiLanguage.T("可先合成")
                 : UiLanguage.IsEnglish ? $"Missing {shortage}" : $"缺少 {shortage}";
             var roleText = $"{UiLanguage.T(routeRow.Role)} · {roleState}";
             var stockText = routeRow.Role == "目标鱼"
-                ? targetOwned
+                ? craftableNow ? UiLanguage.T("可合成") : targetOwned
                     ? UiLanguage.IsEnglish ? $"Owned {count.Owned}" : $"已拥有 {count.Owned}"
-                    : craftableNow
-                        ? UiLanguage.T("可合成")
-                        : canSupply ? UiLanguage.T("可先合成") : UiLanguage.T("材料未齐")
+                    : canSupply ? UiLanguage.T("可先合成") : UiLanguage.T("材料未齐")
                 : quantityMet
                     ? UiLanguage.IsEnglish
                         ? $"Met · {count.Available}/{routeRow.Count} · {count.Owned} owned"
@@ -837,7 +922,7 @@ internal sealed partial class MainForm
                         ? $"Need {shortage} · {count.Available}/{routeRow.Count} · {count.Owned} owned"
                         : $"缺{shortage} · {count.Available}/{routeRow.Count} · 库{count.Owned}";
             var sourceText = UiLanguage.T(routeRow.Role == "目标鱼" && _synthesisRoute.Exact
-                ? targetOwned ? "已拥有" : craftableNow ? "可合成" : canSupply ? "可先合成" : "材料不足"
+                ? craftableNow ? "可合成" : targetOwned ? "已拥有" : canSupply ? "可先合成" : "材料不足"
                 : routeRow.Exact ? "Wiki 配方" : "待验证");
             var index = _synthesisGrid.Rows.Add(
                 new string('　', routeRow.Depth) + (species?.DisplayName ?? routeRow.Type),
@@ -848,12 +933,20 @@ internal sealed partial class MainForm
             var row = _synthesisGrid.Rows[index];
             row.Tag = routeRow;
             row.DefaultCellStyle.BackColor = rowFill;
-            row.DefaultCellStyle.ForeColor = color;
-            foreach (var cellName in new[] { "fish", "star", "count", "role", "unlock", "owned", "source" })
+            row.DefaultCellStyle.ForeColor = White;
+            foreach (var cellName in new[] { "count", "role", "owned", "source" })
             {
                 row.Cells[cellName].Style.ForeColor = color;
                 row.Cells[cellName].Style.BackColor = rowFill;
+                row.Cells[cellName].Style.SelectionForeColor = color;
+                row.Cells[cellName].Style.SelectionBackColor = badgeFill;
             }
+            SetQualityCell(row.Cells["fish"], species?.Tier ?? 0, craftableNow);
+            row.Cells["fish"].ToolTipText = FishCatalog.RarityName(species?.Tier ?? 0);
+            row.Cells["star"].Style.ForeColor = Gold;
+            row.Cells["star"].Style.SelectionForeColor = Gold;
+            row.Cells["unlock"].Style.ForeColor = unlocked ? CraftableText : Muted;
+            row.Cells["unlock"].Style.SelectionForeColor = unlocked ? CraftableText : Muted;
             row.Cells["role"].Style.BackColor = badgeFill;
             row.Cells["role"].Style.Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold);
             row.Cells["owned"].Style.BackColor = badgeFill;
@@ -867,8 +960,17 @@ internal sealed partial class MainForm
                     : $"当前可用：{count.Available}；需求数量：{routeRow.Count}；仓库总数：{count.Owned}";
             row.Cells["source"].Style.BackColor = isReady ? CraftableFill : rowFill;
             row.Cells["breed"].Style.ForeColor = species?.Season == 1 ? Muted : Green;
-            row.Cells["target"].Style.ForeColor = Gold;
+            row.Cells["target"].Style.ForeColor = craftableNow ? CraftableText : Gold;
         }
+    }
+
+    private static void SetQualityCell(DataGridViewCell cell, int tier, bool craftable = false)
+    {
+        cell.Style.ForeColor = craftable ? CraftableText : GradeColor(tier);
+        cell.Style.SelectionForeColor = cell.Style.ForeColor;
+        cell.Style.BackColor = craftable ? CraftableFill : FishQualityPalette.Background;
+        cell.Style.SelectionBackColor = craftable ? CraftableFill : FishQualityPalette.SelectedBackground;
+        cell.Style.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
     }
 
     private void SynthesisGridCellContentClick(object sender, DataGridViewCellEventArgs e)
@@ -1473,6 +1575,20 @@ internal sealed partial class MainForm
     private void UpdateDashboardSummary()
     {
         if (_lblHeaderConnection.IsDisposed) return;
+        var paused = _windowLocked || _actionPauseReason.Length > 0 ||
+            _client.Connected && (!_bridgeVersionOk || !_bridgeAllowsActions);
+        var waiting = _chkAuto.Checked && !_armed;
+        var state = !_chkAuto.Checked && !_armed ? "已停止"
+            : paused ? "已暂停"
+            : !_client.Connected ? "等待连接"
+            : waiting ? "正在开启" : "正在运行";
+        _lblRunState.Text = "● " + UiLanguage.T(state);
+        _lblRunState.ForeColor = state == "正在运行" ? Color.FromArgb(17, 108, 62)
+            : state is "已暂停" or "等待连接" or "正在开启" ? Color.FromArgb(143, 87, 0)
+            : Color.FromArgb(96, 108, 125);
+        _lblRunState.BackColor = state == "正在运行" ? Color.FromArgb(221, 246, 232)
+            : state is "已暂停" or "等待连接" or "正在开启" ? Color.FromArgb(255, 243, 212)
+            : Color.FromArgb(235, 239, 244);
         _lblHeaderConnection.Text = UiLanguage.T(_client.Connected ? "● 已连接" : "● 未连接");
         _lblHeaderConnection.ForeColor = _client.Connected ? Green : Muted;
         _lblOverviewFish.Text = _lastFish?.Count.ToString() ?? "—";
@@ -1516,7 +1632,8 @@ internal sealed partial class MainForm
                 f.id == null ? "—" : f.id.Length > 8 ? f.id[..8] : f.id);
             var row = _warehouse.Rows[index];
             row.Tag = f;
-            row.Cells["grade"].Style.ForeColor = GradeColor(f.RarityTier);
+            SetQualityCell(row.Cells["fish"], f.RarityTier);
+            SetQualityCell(row.Cells["grade"], f.RarityTier);
             row.Cells["stars"].Style.ForeColor = Gold;
             row.Cells["status"].Style.ForeColor = StatusColor(f);
             if (f.serverBc >= 0)
@@ -1602,10 +1719,7 @@ internal sealed partial class MainForm
     {
         0 => "基础", 1 => "普通", 2 => "高级", 3 => "稀有", 4 => "传说", 5 => "神话", _ => $"T{grade}"
     });
-    private static Color GradeColor(int grade) => grade switch
-    {
-        5 => Gold, 4 => Color.FromArgb(189, 139, 255), 3 => Color.FromArgb(110, 174, 255), 2 => Blue, _ => Muted
-    };
+    private static Color GradeColor(int grade) => FishQualityPalette.ForTier(grade);
     private static string StarText(int stars)
         => stars is >= 1 and <= 5 ? new string('★', stars) + new string('☆', 5 - stars) : "—";
     private static string CooldownText(FishDto f)

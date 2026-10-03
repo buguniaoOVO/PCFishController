@@ -22,6 +22,7 @@ internal sealed partial class MainForm : Form
     private NotifyIcon _trayIcon;
     private ContextMenuStrip _trayMenu;
     private bool _allowClose;
+    private DateTime _nextConsoleCheckAt;
 
     private readonly Label _lblProcess = new();
     private readonly Label _lblBridge = new();
@@ -155,6 +156,7 @@ internal sealed partial class MainForm : Form
         _log.Write(UiLanguage.T("本程序不操作鼠标键盘、不向游戏窗口画任何东西。"));
 
         _client.Start();
+        HideGameConsoleIfNeeded();
 
         _timer.Interval = 1000;
         _timer.Start();
@@ -377,6 +379,41 @@ internal sealed partial class MainForm : Form
 
         FormClosing += OnMainFormClosing;
         FormClosed += (_, _) => _trayIcon?.Dispose();
+    }
+
+    private void HideGameConsoleIfNeeded()
+    {
+        if (!_settings.HideGameConsole) return;
+        if (DateTime.UtcNow < _nextConsoleCheckAt) return;
+        _nextConsoleCheckAt = DateTime.UtcNow.AddSeconds(5);
+        var message = GameConsole.EnsureHidden(_settings.GameDir);
+        if (message != null) _log.Write(message);
+    }
+
+    private void StartAllAutomation()
+    {
+        _chkAutoUpgrade.Checked = true;
+        if (!_chkAuto.Checked) _chkAuto.Checked = true;
+        else { _nextCheckAt = DateTime.Now; SendArm(true); }
+        SaveSettings();
+        UpdateStatusLabels();
+        _log.Write("已一键开启自动繁育和升级检查。");
+    }
+
+    private void StopAllAutomation()
+    {
+        _autoResumeAt = DateTime.MinValue;
+        _chkAuto.Checked = false;
+        _chkAutoUpgrade.Checked = false;
+        _upgradePending = false;
+        _nextActionAt = DateTime.MinValue;
+        _armAfterServerAudit = _beginRoundAfterServerAudit = false;
+        _roundActive = false;
+        if (!_breedRequest.Active) _actionPauseReason = "";
+        SendArm(false);
+        SaveSettings();
+        UpdateStatusLabels();
+        _log.Write(_breedRequest.Active ? "已关闭自动运行，当前繁育继续核对结果。" : "已关闭全部自动运行。");
     }
 
     private void SaveSettings()
@@ -988,6 +1025,7 @@ internal sealed partial class MainForm : Form
 
     private void OnTick(object sender, EventArgs e)
     {
+        HideGameConsoleIfNeeded();
         UpdateStatusLabels();
         UpdateWarehouseCountdowns();
         if (_breedRequest.Waiting && _breedRequest.TimedOut) RequestBreedStatus();

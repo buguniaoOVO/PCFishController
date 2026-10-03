@@ -6,6 +6,7 @@
 # PCFish Controller
 
 A background assistant for the idle fish-breeding game PCFish. It runs the breeding loop and the tank upgrades for you, while the game window sits minimized or behind other windows.
+The BepInEx console hides on startup, and file logging continues.
 
 ## How it is built
 
@@ -18,7 +19,7 @@ Breeding goes through the game's own data and network entry points. The controll
 
 ## What it does
 
-- Runs with no simulated input, so you keep using your mouse and keyboard while it works
+- Overview shows run status, game connection, fish count, breeding counter and tank level. Start All and Stop All control automatic breeding and upgrade checks
 - Every 15-30 minutes (configurable), reads the breeding counter and breeds until it reaches zero, then waits for the next check
 - Picks fish by your goal route, or by rarity and stars; skips fish on cooldown, out of breed uses, locked, or displayed
 - Skips direct parent-child pairs, and avoids combinations the server rejected
@@ -29,11 +30,13 @@ Breeding goes through the game's own data and network entry points. The controll
 
 ## Interface
 
-Overview, Auto Breeding, Warehouse, Synthesis Route, Logs and Settings. The Warehouse lists species, rarity, stars, remaining breeds and cooldown, with search, filters and sortable columns. Language switches between Chinese and English. The close button can ask each time, exit the assistant, or minimize it to the system tray.
+Overview, Auto Breeding, Warehouse, Synthesis Route, Logs and Settings. The Warehouse lists species, rarity, stars, remaining breeds and cooldown, with search, filters and sortable columns. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
 
 ## One-click setup
 
 The Settings button locates the game folder, installs the BepInEx 6 runtime when missing, copies the plugin into `BepInEx\plugins`, starts the game once to write the config file, then turns on the in-game action switch. Progress prints as it runs.
+
+The Synthesis Route uses the game's rarity colors for fish names. Yellow, blue and green mark missing materials, sufficient quantities and season fish ready to synthesize in both the route and table.
 
 ## Safety
 

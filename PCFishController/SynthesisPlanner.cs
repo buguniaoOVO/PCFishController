@@ -17,6 +17,17 @@ internal sealed class SynthesisRoute
 /// </summary>
 internal static class SynthesisPlanner
 {
+    internal static bool CanCraftNow(string targetType, int star, IReadOnlyList<FishDto> fish)
+    {
+        var route = Build(targetType, star);
+        if (!route.Exact) return false;
+        var ingredients = route.Rows.Where(row => row.Depth == 1)
+            .GroupBy(row => (row.Type, row.Star)).ToList();
+        return ingredients.Count > 0 && ingredients.All(group =>
+            (fish ?? Array.Empty<FishDto>()).Count(f => f.ty == group.Key.Type && f.Stars == group.Key.Star && Selection.CanMerge(f))
+                >= group.Sum(row => row.Count));
+    }
+
     internal static SynthesisRoute Build(string targetType, int targetStar)
     {
         targetType = string.IsNullOrWhiteSpace(targetType) ? "" : targetType.Trim().ToUpperInvariant();

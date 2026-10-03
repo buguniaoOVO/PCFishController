@@ -239,6 +239,8 @@ internal static class GameDeploy
             Step("插件已安装");
         }
 
+        if (GameConsole.DisableInConfig(gameDir)) Step("已设置 BepInEx 控制台默认隐藏");
+
         // ---------- 3. 生成 cfg：插件只在游戏加载时创建它 ----------
         if (!File.Exists(result.ConfigPath))
         {

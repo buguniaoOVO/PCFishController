@@ -4,7 +4,7 @@ using System.Windows.Forms;
 class Checks {
  [STAThread] static void Main() {
   // The constructor reads config relative to THIS harness, never the installed assistant.
-  File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"PCFish控制器配置.json"),"{\"Port\":39189,\"AutoBreed\":false}");
+  File.WriteAllText(Path.Combine(AppContext.BaseDirectory,"PCFish控制器配置.json"),"{\"Port\":39189,\"AutoBreed\":false,\"HideGameConsole\":false}");
   ApplicationConfiguration.Initialize();
   var asm=Assembly.Load("PCFishController");
   var type=asm.GetType("PCFishController.MainForm");
