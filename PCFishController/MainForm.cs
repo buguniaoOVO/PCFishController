@@ -15,6 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
+    private const string ExpectedBridgeVersion = "0.23.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
@@ -148,7 +149,7 @@ internal sealed partial class MainForm : Form
 
         _log.LineWritten += OnLogLine;
         _goalPlan = GoalPlanner.Build(_settings.GoalType, _settings.GoalStar, _collectionTypes, _lastFish);
-        _log.Write(UiLanguage.T($"=== PCFish助手 v0.23.0 启动 ===（桥接端口 {_settings.Port}）"));
+        _log.Write(UiLanguage.T($"=== PCFish助手 v{UpdateChecker.CurrentVersion} 启动 ===（桥接端口 {_settings.Port}）"));
         _log.Write(UiLanguage.T($"配置文件：{AppSettings.FilePath}"));
         _log.Write(UiLanguage.T($"繁育节奏：每 {_settings.BreedIntervalMinSeconds / 60}~{_settings.BreedIntervalMaxSeconds / 60} 分钟检查，现有繁育计数器逐次用完"));
         _log.Write(UiLanguage.T("本程序不操作鼠标键盘、不向游戏窗口画任何东西。"));
@@ -198,11 +199,16 @@ internal sealed partial class MainForm : Form
     }
 
     private void RestoreFromTray()
+        => RestoreMainWindow();
+
+    internal void RestoreMainWindow()
     {
+        if (IsDisposed || Disposing) return;
         _trayIcon.Visible = false;
         ShowInTaskbar = true;
         Show();
         WindowState = FormWindowState.Normal;
+        WindowVisibility.Show(Handle);
         Activate();
     }
 
@@ -583,13 +589,13 @@ internal sealed partial class MainForm : Form
         {
             case "hello":
                 if (!string.IsNullOrWhiteSpace(msg.apiStatus)) _log.Write(msg.apiStatus);
-                _bridgeVersionOk = msg.ver == "0.23.0";
+                _bridgeVersionOk = msg.ver == ExpectedBridgeVersion;
                 _readOnlyMode = false;
                 _bridgeMinInterval = Math.Max(60, msg.minInterval);
                 _bridgeAllowsActions = msg.cfg;
                 _log.Write($"桥接版本 {msg.ver}，最小动作间隔 {_bridgeMinInterval} 秒，" +
                            (msg.cfg ? "游戏内已放行动作" : "游戏内 cfg 尚未放行动作"));
-                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（0.23.0）不匹配，已阻止动作。");
+                if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（{ExpectedBridgeVersion}）不匹配，已阻止动作。");
                 _chkAuto.Enabled = _bridgeVersionOk;
                 _chkAutoUpgrade.Enabled = _bridgeVersionOk;
                 _btnOnce.Enabled = _bridgeVersionOk;

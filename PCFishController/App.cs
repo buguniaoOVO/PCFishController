@@ -152,8 +152,13 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
+        using var showRequest = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\PCFishController.Show");
         using var singleInstance = new Mutex(true, "Local\\PCFishController", out var firstInstance);
-        if (!firstInstance) return;
+        if (!firstInstance)
+        {
+            showRequest.Set();
+            return;
+        }
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
             Mark("!! AppDomain 未处理异常", e.ExceptionObject);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -166,6 +171,17 @@ internal static class Program
             Mark("2 WinForms 初始化完成");
             var form = new MainForm();
             Mark("3 主窗口构造完成");
+            using var activationTimer = new System.Windows.Forms.Timer { Interval = 200 };
+            var initialShow = true;
+            activationTimer.Tick += (_, _) =>
+            {
+                // 主窗口已创建后显示它；再次启动任一 exe 时唤回同一窗口。
+                var requested = showRequest.WaitOne(0);
+                if (!initialShow && !requested) return;
+                initialShow = false;
+                form.RestoreMainWindow();
+            };
+            activationTimer.Start();
             Application.Run(form);
             Mark("4 Application.Run 正常返回（窗口被关掉了）");
         }
