@@ -18,6 +18,9 @@ internal sealed class AppSettings
     /// <summary>关闭按钮：ask 每次询问，exit 退出，tray 缩小至托盘。</summary>
     public string CloseBehavior { get; set; } = "ask";
     public bool HideGameConsole { get; set; } = true;
+
+    /// <summary>启动时以及之后每小时自动检查一次 GitHub 上的新版本。</summary>
+    public bool AutoCheckUpdate { get; set; } = true;
     /// <summary>仓库总鱼数超过该值时自动合成。</summary>
     public int AutoMergeThreshold { get; set; } = 900;
 

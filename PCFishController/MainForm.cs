@@ -15,7 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
-private const string ExpectedBridgeVersion = "0.30.0";
+private const string ExpectedBridgeVersion = "0.31.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
@@ -23,6 +23,9 @@ private const string ExpectedBridgeVersion = "0.30.0";
     private ContextMenuStrip _trayMenu;
     private bool _allowClose;
     private DateTime _nextConsoleCheckAt;
+    private DateTime _nextUpdateCheckAt = DateTime.MinValue;
+    private bool _updateCheckRunning;
+    private string _notifiedUpdateTag = "";
 
     private readonly Label _lblProcess = new();
     private readonly Label _lblBridge = new();
@@ -42,6 +45,7 @@ private const string ExpectedBridgeVersion = "0.30.0";
     private readonly NumericUpDown _numMergeSafety = new();
     private readonly CheckBox _chkMerge = new();
     private readonly CheckBox _chkMergeExcludeSeasonal = new();
+    private readonly CheckBox _chkAutoUpdate = new();
     private readonly Button _btnMergeNow = new();
     private readonly Label _lblMergeStatus = new();
     private readonly Label _lblMergePlan = new();
@@ -166,6 +170,9 @@ private const string ExpectedBridgeVersion = "0.30.0";
         _log.Write(UiLanguage.T($"繁育节奏：每 {_settings.BreedIntervalMinSeconds / 60}~{_settings.BreedIntervalMaxSeconds / 60} 分钟检查，现有繁育计数器逐次用完"));
         _log.Write(UiLanguage.T("本程序不操作鼠标键盘、不向游戏窗口画任何东西。"));
 
+        // 启动后约 3 秒做一次自动更新检查，先让界面和桥接连接稳定下来。
+        if (_settings.AutoCheckUpdate) _nextUpdateCheckAt = DateTime.Now.AddSeconds(3);
+
         _client.Start();
         HideGameConsoleIfNeeded();
 
@@ -193,6 +200,13 @@ private const string ExpectedBridgeVersion = "0.30.0";
         _trayMenu = new ContextMenuStrip();
         var openItem = _trayMenu.Items.Add(UiLanguage.T("打开助手"));
         openItem.Click += (_, _) => RestoreFromTray();
+        var updateItem = _trayMenu.Items.Add(UiLanguage.T("检查更新"));
+        updateItem.Click += (_, _) =>
+        {
+            RestoreFromTray();
+            _ = CheckForUpdateAsync();
+        };
+
         var exitItem = _trayMenu.Items.Add(UiLanguage.T("退出助手"));
         exitItem.Click += (_, _) =>
         {
@@ -480,6 +494,7 @@ private const string ExpectedBridgeVersion = "0.30.0";
         _settings.MergeSafetySeconds = (int)_numMergeSafety.Value;
         _settings.AutoMerge = _chkMerge.Checked;
         _settings.AutoMergeExcludeSeasonal = _chkMergeExcludeSeasonal.Checked;
+        _settings.AutoCheckUpdate = _chkAutoUpdate.Checked;
         _settings.Language = UiLanguage.Current;
         _settings.GoalType = _goalTypeCombo?.SelectedValue?.ToString() ?? _settings.GoalType;
         _settings.GoalStar = _goalStarCombo == null ? _settings.GoalStar : Math.Clamp(_goalStarCombo.SelectedIndex + 1, 1, 5);
@@ -726,6 +741,78 @@ private const string ExpectedBridgeVersion = "0.30.0";
         _client.Send("MERGE " + string.Join(" ", picks.Select(p => p.id)));
         _lastActionAt = DateTime.Now;
         return true;
+    }
+
+    /// <summary>
+    /// 自动检查更新：启动时一次，之后每小时一次。
+    /// 检查在后台线程跑，结果回到界面线程；发现新版本时写日志、更新设置页状态，
+    /// 并在托盘弹出提示。已经提示过的版本不会重复打扰。
+    /// </summary>
+    private async void MaybeAutoCheckUpdate()
+    {
+        if (!_settings.AutoCheckUpdate) return;
+        if (_updateCheckRunning) return;
+        if (DateTime.Now < _nextUpdateCheckAt) return;
+
+        _updateCheckRunning = true;
+        // 先排下一次，避免检查失败时每个心跳都重试。
+        _nextUpdateCheckAt = DateTime.Now.AddHours(1);
+        try
+        {
+            var info = await UpdateChecker.CheckAsync();
+            Ui(() =>
+            {
+                // 把结果同步到设置页，用户在界面上能看到同一条状态。
+                ApplyUpdateResult(info);
+                if (!info.Ok)
+                {
+                    _log.Write("自动检查更新：" + info.Message);
+                    return;
+                }
+                if (!info.HasUpdate)
+                {
+                    _log.Write($"自动检查更新：已是最新版本（{info.CurrentVersion}）。");
+                    return;
+                }
+
+                _log.Write($"自动检查更新：" + info.Message);
+                if (!string.IsNullOrWhiteSpace(info.ReleaseUrl))
+                    _log.Write("发布页：" + info.ReleaseUrl);
+
+                if (string.Equals(_notifiedUpdateTag, info.LatestTag, StringComparison.Ordinal)) return;
+                _notifiedUpdateTag = info.LatestTag;
+                NotifyUpdateAvailable(info);
+            });
+        }
+        catch (Exception ex)
+        {
+            Ui(() =>
+            {
+                _log.Write("自动检查更新失败：" + ex.Message);
+                _updateCheckRunning = false;
+                _nextUpdateCheckAt = DateTime.Now.AddSeconds(60);
+            });
+            return;
+        }
+        _updateCheckRunning = false;
+    }
+
+    /// <summary>发现新版本时提示用户：托盘气泡 + 缩到托盘时也看得到。</summary>
+    private void NotifyUpdateAvailable(UpdateInfo info)
+    {
+        var message = info.LatestTag.Length > 0
+            ? $"发现新版本 {info.LatestTag}（当前 {info.CurrentVersion}）。到「设置 → 版本更新」一键更新。"
+            : "发现新版本。到「设置 → 版本更新」一键更新。";
+        try
+        {
+            _trayIcon.Visible = true;
+            _trayIcon.ShowBalloonTip(5000, UiLanguage.T("PCFish 助手有新版本"),
+                UiLanguage.T(message), ToolTipIcon.Info);
+        }
+        catch (Exception ex)
+        {
+            _log.Write("弹出更新提示失败：" + ex.Message);
+        }
     }
 
     /// <summary>手动触发一次合成，忽略库存阈值。结果通过日志说明。</summary>
@@ -1185,6 +1272,7 @@ private const string ExpectedBridgeVersion = "0.30.0";
     private void OnTick(object sender, EventArgs e)
     {
         HideGameConsoleIfNeeded();
+        MaybeAutoCheckUpdate();
         UpdateStatusLabels();
         UpdateWarehouseCountdowns();
         if (_breedRequest.Waiting && _breedRequest.TimedOut) RequestBreedStatus();

@@ -1474,7 +1474,7 @@ internal sealed partial class MainForm
         AddPage(body, "settings", page);
         var deploy = Surface();
         deploy.Dock = DockStyle.Top;
-        deploy.Height = 330;
+        deploy.Height = 376;
         var deployTitle = Label("一键部署", 13, true);
         deployTitle.SetBounds(20, 14, 240, 34);
         var deployNote = Label(
@@ -1526,9 +1526,29 @@ internal sealed partial class MainForm
         var updateNote = Label("更新只替换程序文件，不会动你的配置和游戏数据。", 9, false, Muted);
         updateNote.SetBounds(22, 286, 780, 26);
 
+        _chkAutoUpdate.SetBounds(22, 322, 300, 36);
+        _chkAutoUpdate.Text = "启动时与每小时自动检查更新";
+        _chkAutoUpdate.Checked = _settings.AutoCheckUpdate;
+        StyleCheck(_chkAutoUpdate);
+        _chkAutoUpdate.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoCheckUpdate = _chkAutoUpdate.Checked;
+            _settings.Save();
+            if (_chkAutoUpdate.Checked)
+            {
+                _nextUpdateCheckAt = DateTime.Now;
+                _log.Write("已开启自动检查更新。");
+            }
+            else
+            {
+                _log.Write("已关闭自动检查更新。");
+            }
+        };
+
         deploy.Controls.AddRange(new Control[]
         {
-            updateTitle, _updateStatus, _updateCheckButton, _updateApplyButton, _updatePageButton, updateNote
+            updateTitle, _updateStatus, _updateCheckButton, _updateApplyButton, _updatePageButton,
+            updateNote, _chkAutoUpdate
         });
 
         var card = Surface();
@@ -1594,6 +1614,7 @@ internal sealed partial class MainForm
         page.Controls.Add(card);
         page.Controls.Add(deploy);
 
+        _chkAutoUpdate.Checked = _settings.AutoCheckUpdate;
         _gameDirBox.Text = _settings.GameDir ?? "";
         _gameDirBox.TextChanged += (_, _) =>
         {
@@ -1646,6 +1667,35 @@ internal sealed partial class MainForm
         }
     }
 
+    /// <summary>
+    /// 把一次检查结果写进设置页的版本更新卡片。
+    /// 手动检查和控制器的自动检查共用这一段，保证两边显示一致。
+    /// </summary>
+    private void ApplyUpdateResult(UpdateInfo info)
+    {
+        _pendingUpdate = info.Ok && info.HasUpdate && !string.IsNullOrWhiteSpace(info.AssetUrl)
+            ? info : null;
+
+        var lines = new List<string> { UiLanguage.T(info.Message) };
+        if (_pendingUpdate != null)
+        {
+            var details = new List<string>();
+            if (!string.IsNullOrWhiteSpace(info.AssetName))
+                details.Add($"{info.AssetName}（{info.DescribeSize()}）");
+            if (!string.IsNullOrWhiteSpace(info.LatestTag)) details.Add(info.LatestTag);
+            if (details.Count > 0) lines.Add(string.Join("  ·  ", details));
+        }
+        else if (info.Ok && info.HasUpdate)
+        {
+            lines.Add(UiLanguage.T("这个发布没有可下载的压缩包，请到发布页手动下载。"));
+        }
+
+        _updateStatus.Text = string.Join(Environment.NewLine, lines);
+        _updateStatus.ForeColor = _pendingUpdate != null ? Green : Muted;
+        _updateApplyButton.Visible = _pendingUpdate != null;
+        _updateApplyButton.Enabled = _pendingUpdate != null;
+    }
+
     /// <summary>检查 GitHub 上的最新发布。只查询，不下载。</summary>
     private async Task CheckForUpdateAsync()
     {
@@ -1655,29 +1705,14 @@ internal sealed partial class MainForm
         try
         {
             var info = await UpdateChecker.CheckAsync();
-            _pendingUpdate = info.Ok && info.HasUpdate && !string.IsNullOrWhiteSpace(info.AssetUrl)
-                ? info : null;
-
-            var lines = new List<string> { info.Message };
-            if (_pendingUpdate != null)
-            {
-                var details = new List<string>();
-                if (!string.IsNullOrWhiteSpace(info.AssetName))
-                    details.Add($"{info.AssetName}（{info.DescribeSize()}）");
-                if (!string.IsNullOrWhiteSpace(info.LatestTag)) details.Add(info.LatestTag);
-                if (details.Count > 0) lines.Add(string.Join("  ·  ", details));
-            }
-            else if (info.Ok && info.HasUpdate)
-            {
-                lines.Add(UiLanguage.T("这个发布没有可下载的压缩包，请到发布页手动下载。"));
-            }
-            _updateStatus.Text = string.Join(Environment.NewLine, lines);
-            _updateStatus.ForeColor = _pendingUpdate != null ? Green : Muted;
-            _updateApplyButton.Visible = _pendingUpdate != null;
-            _updateApplyButton.Enabled = _pendingUpdate != null;
+            ApplyUpdateResult(info);
+            var lines = _updateStatus.Text.Split(Environment.NewLine);
             foreach (var line in lines) _log.Write("检查更新：" + line);
             if (info.Ok && info.HasUpdate && !string.IsNullOrWhiteSpace(info.ReleaseUrl))
                 _log.Write("发布页：" + info.ReleaseUrl);
+            // 手动检查过就重置计时，避免紧接着又自动跑一次。
+            _nextUpdateCheckAt = DateTime.Now.AddHours(1);
+            if (info.Ok && info.HasUpdate) _notifiedUpdateTag = info.LatestTag;
         }
         catch (Exception ex)
         {
