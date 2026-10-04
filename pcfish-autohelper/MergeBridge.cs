@@ -1,17 +1,19 @@
 using System;
 using System.Collections.Generic;
-using Il2CppInterop.Runtime.InteropTypes.Arrays;
+using NN.PF.Core.Managers;
 using NN.PF.UI.Merge;
 
 namespace PCFishAutoHelper;
 
 /// <summary>
-/// 后台自动合成。走游戏自己的 UIMerge.Merge()（就是合成窗口的合成按钮），
-/// 只设置候选列表和合成类型，不修改任何界面对象。
+/// 后台自动合成。按真实点击顺序驱动游戏自己的合成窗口：
+///   打开功能窗口 → 切到合成标签 → 逐条点“+”放鱼 → 点“合成” → 等动画 → 关闭结果弹窗。
+/// 只调用游戏公开的 UI 入口，不手工改界面对象。
 /// </summary>
 internal static class MergeBridge
 {
     internal const int RequiredCount = 10;
+    private const int MergeTabIndex = 3;   // 功能窗口底边第 4 个图标 = 合成
 
     internal static UIMerge Find()
     {
@@ -26,7 +28,44 @@ internal static class MergeBridge
         return null;
     }
 
-    /// <summary>只读探测：报告合成面板是否存在、能否安全提交。不执行任何动作。</summary>
+    private static UIManager Manager()
+    {
+        try { return UIManager.HasInstance ? UIManager.Instance : null; }
+        catch (Exception ex) { Journal.Error("读取 UI 管理器失败", ex); return null; }
+    }
+
+    /// <summary>
+    /// 打开功能窗口并切到合成标签。
+    /// 先 OpenWindow（等价于点向上箭头），再 ChangeTabMenu（等价于点第 4 个图标）。
+    /// </summary>
+    internal static bool OpenMergeWindow(out string detail)
+    {
+        detail = "";
+        try
+        {
+            var ui = Manager();
+            if (ui == null) { detail = "UI 管理器尚未就绪"; return false; }
+            ui.OpenWindow();
+            ui.ChangeTabMenu(MergeTabIndex);
+            detail = "已打开功能窗口并切到合成标签";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Journal.Error("打开合成标签失败", ex);
+            detail = "打开合成标签失败：" + ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    /// <summary>关闭功能窗口。等价于点右上角 X。</summary>
+    internal static void CloseWindow()
+    {
+        try { Manager()?.CloseWindow(); }
+        catch (Exception ex) { Journal.Error("关闭功能窗口失败", ex); }
+    }
+
+    /// <summary>只读探测：报告合成面板状态，不执行任何动作。</summary>
     internal static string Describe()
     {
         try
@@ -48,14 +87,12 @@ internal static class MergeBridge
             }
             var max = 0;
             try { max = UIMerge.MAX_MERGE_COUNT; } catch { }
-            var fieldCount = 0;
-            var current = 0;
+            var filled = 0;
             if (sample?.mergeFishList != null)
-            {
-                fieldCount = sample.mergeFishList.Length;
-                foreach (var id in sample.mergeFishList) if (!string.IsNullOrEmpty(id)) current++;
-            }
-            return $"合成面板 实例={total} 可见={active} 结果对象可用={mergeable} MAX={max} 当前候选={current}/{fieldCount}";
+                foreach (var id in sample.mergeFishList) if (!string.IsNullOrEmpty(id)) filled++;
+            var resultOpen = sample != null && sample.uiFishResult != null &&
+                sample.uiFishResult.gameObject != null && sample.uiFishResult.gameObject.activeInHierarchy;
+            return $"合成面板 实例={total} 可见={active} 结果对象可用={mergeable} 结果弹窗={resultOpen} MAX={max} 已放={filled}";
         }
         catch (Exception ex)
         {
@@ -64,52 +101,92 @@ internal static class MergeBridge
         }
     }
 
-    internal static bool TryMerge(IList<string> ids, out string reason)
+    /// <summary>
+    /// 逐步放鱼：先清空，再对每条鱼调用游戏自己的 SetParent（等同于点一次“+”）。
+    /// 返回实际填入的条数。
+    /// </summary>
+    internal static int FillParents(UIMerge ui, IList<string> ids, out string detail)
     {
-        reason = "";
-        if (ids == null || ids.Count != RequiredCount)
-        {
-            reason = $"合成需要正好 {RequiredCount} 条鱼";
-            return false;
-        }
-        var ui = Find();
-        if (ui == null)
-        {
-            reason = "合成面板尚未创建；请手动打开一次合成界面让游戏建好它";
-            return false;
-        }
-        if (!GameBridge.TryGetDataManager(out var dm))
-        {
-            reason = "游戏数据尚未就绪";
-            return false;
-        }
-        var fish = GameBridge.Snapshot(dm);
-        if (fish == null)
-        {
-            reason = "鱼群读取失败";
-            return false;
-        }
-        foreach (var id in ids)
-        {
-            var candidate = fish.Find(f => f.Id == id);
-            if (candidate == null) { reason = "候选中已不存在 " + id; return false; }
-            if (candidate.IsPlaced || candidate.IsLocked) { reason = "候选已展示或已锁定"; return false; }
-        }
+        detail = "";
+        var placed = 0;
         try
         {
-            ui.mergeType = MergeType.Standard;
-            var array = new string[ids.Count];
-            for (var i = 0; i < ids.Count; i++) array[i] = ids[i];
-            ui.mergeFishList = new Il2CppStringArray(array);
+            ui.ResetParent();
+            foreach (var id in ids)
+            {
+                if (string.IsNullOrEmpty(id)) continue;
+                if (ui.SetParent(id)) placed++;
+            }
+            detail = $"已放鱼 {placed}/{ids.Count}";
+        }
+        catch (Exception ex)
+        {
+            Journal.Error("放鱼到合成窗口失败", ex);
+            detail = "放鱼失败：" + ex.GetBaseException().Message;
+        }
+        return placed;
+    }
+
+    /// <summary>点“合成”按钮。等价于点合成窗口里那个紫色合成按钮。</summary>
+    internal static bool ClickMerge(UIMerge ui, out string detail)
+    {
+        detail = "";
+        try
+        {
+            if (ui.mergeFishList == null || ui.mergeFishList.Length < RequiredCount)
+            {
+                detail = "合成候选不足，游戏不会接受";
+                return false;
+            }
             ui.Merge();
-            Journal.Write($"后台合成已提交：{string.Join(",", ids)}");
+            detail = "已点击合成";
             return true;
         }
         catch (Exception ex)
         {
-            Journal.Error("提交合成失败", ex);
-            reason = "合成入口执行失败：" + ex.GetBaseException().Message;
+            Journal.Error("点击合成失败", ex);
+            detail = "点击合成失败：" + ex.GetBaseException().Message;
             return false;
         }
+    }
+
+    /// <summary>
+    /// 关闭合成结果弹窗。结果页由游戏自己的收尾入口关闭：
+    /// FinishFx 结束动画，Confirm 确认结果，和繁育用的是同一条链。
+    /// </summary>
+    internal static string CloseResult(UIMerge ui)
+    {
+        try
+        {
+            if (ui?.uiFishResult == null || ui.uiFishResultFx == null) return "结果对象不可用";
+            var parts = new List<string>();
+            if (ui.uiFishResultFx.gameObject.activeSelf)
+            {
+                ui.uiFishResultFx.FinishFx();
+                parts.Add("动画已结束");
+            }
+            if (ui.uiFishResult.gameObject.activeSelf)
+            {
+                ui.uiFishResult.Confirm();
+                parts.Add("结果已确认");
+            }
+            return parts.Count == 0 ? "结果弹窗已关闭" : string.Join("；", parts);
+        }
+        catch (Exception ex)
+        {
+            Journal.Error("关闭合成结果弹窗失败", ex);
+            return "关闭结果弹窗失败：" + ex.GetBaseException().Message;
+        }
+    }
+
+    /// <summary>合成结果弹窗是否仍显示。</summary>
+    internal static bool ResultOpen(UIMerge ui)
+    {
+        try
+        {
+            return ui?.uiFishResult != null && ui.uiFishResult.gameObject != null &&
+                   ui.uiFishResult.gameObject.activeInHierarchy;
+        }
+        catch { return false; }
     }
 }

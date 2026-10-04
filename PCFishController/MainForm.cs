@@ -15,7 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
-    private const string ExpectedBridgeVersion = "0.25.0";
+    private const string ExpectedBridgeVersion = "0.26.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
