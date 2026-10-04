@@ -15,7 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
-private const string ExpectedBridgeVersion = "0.28.0";
+private const string ExpectedBridgeVersion = "0.29.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
@@ -40,6 +40,11 @@ private const string ExpectedBridgeVersion = "0.28.0";
     private readonly NumericUpDown _numMinGrade = new();
     private readonly NumericUpDown _numMergeThreshold = new();
     private readonly NumericUpDown _numMergeSafety = new();
+    private readonly CheckBox _chkMerge = new();
+    private readonly CheckBox _chkMergeExcludeSeasonal = new();
+    private readonly Button _btnMergeNow = new();
+    private readonly Label _lblMergeStatus = new();
+    private readonly Label _lblMergePlan = new();
     private readonly Button _btnOnce = new();
     private readonly Button _btnUpgrade = new();
     private readonly Button _btnState = new();
@@ -360,6 +365,31 @@ private const string ExpectedBridgeVersion = "0.28.0";
             _settings.Save();
         };
 
+        _chkMerge.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoMerge = _chkMerge.Checked;
+            _settings.Save();
+            if (_chkMerge.Checked)
+            {
+                _nextMergeCheckAt = DateTime.Now;
+                _log.Write("已开启自动合成。");
+            }
+            else
+            {
+                _log.Write("已关闭自动合成。");
+            }
+            UpdateMergeStatus();
+        };
+
+        _chkMergeExcludeSeasonal.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoMergeExcludeSeasonal = _chkMergeExcludeSeasonal.Checked;
+            _settings.Save();
+            UpdateMergeStatus();
+        };
+
+        _btnMergeNow.Click += (_, _) => MergeNow();
+
         _btnOnce.Click += (_, _) =>
         {
             if (!EnsureReadyForAction()) return;
@@ -409,11 +439,13 @@ private const string ExpectedBridgeVersion = "0.28.0";
     private void StartAllAutomation()
     {
         _chkAutoUpgrade.Checked = true;
+        _chkMerge.Checked = true;
+        _nextMergeCheckAt = DateTime.Now;
         if (!_chkAuto.Checked) _chkAuto.Checked = true;
         else { _nextCheckAt = DateTime.Now; SendArm(true); }
         SaveSettings();
         UpdateStatusLabels();
-        _log.Write("已一键开启自动繁育和升级检查。");
+        _log.Write("已一键开启自动繁育、合成和升级检查。");
     }
 
     private void StopAllAutomation()
@@ -421,6 +453,7 @@ private const string ExpectedBridgeVersion = "0.28.0";
         _autoResumeAt = DateTime.MinValue;
         _chkAuto.Checked = false;
         _chkAutoUpgrade.Checked = false;
+        _chkMerge.Checked = false;
         _upgradePending = false;
         _nextActionAt = DateTime.MinValue;
         _armAfterServerAudit = _beginRoundAfterServerAudit = false;
@@ -445,6 +478,8 @@ private const string ExpectedBridgeVersion = "0.28.0";
         _settings.MinGrade = (int)_numMinGrade.Value;
         _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
         _settings.MergeSafetySeconds = (int)_numMergeSafety.Value;
+        _settings.AutoMerge = _chkMerge.Checked;
+        _settings.AutoMergeExcludeSeasonal = _chkMergeExcludeSeasonal.Checked;
         _settings.Language = UiLanguage.Current;
         _settings.GoalType = _goalTypeCombo?.SelectedValue?.ToString() ?? _settings.GoalType;
         _settings.GoalStar = _goalStarCombo == null ? _settings.GoalStar : Math.Clamp(_goalStarCombo.SelectedIndex + 1, 1, 5);
@@ -623,34 +658,82 @@ private const string ExpectedBridgeVersion = "0.28.0";
         _lastActionAt = DateTime.Now;
     }
 
-    /// <summary>仓库总数超过阈值时自动合成：排除赛季鱼与赛季配方鱼，优先 0 次数的低稀有度鱼。</summary>
+    /// <summary>自动合成的触发入口：仓库超过阈值就发起一次。</summary>
     private void MaybeAutoMerge()
     {
-        _mergeRequestedAt = DateTime.MinValue;
-        _awaitingMerge = false;
-        if (!_chkAuto.Checked || !_armed || !_bridgeVersionOk || !_bridgeAllowsActions) return;
-        if (_client.Connected == false || _gameBusy || _windowLocked) return;
+        if (!_settings.AutoMerge) return;
         if (_lastFish == null || _lastFish.Count <= _settings.AutoMergeThreshold) return;
-        if (_upgradePending || _awaitingUpgrade || _statePending || _serverAuditPending) return;
-        if (_actionWaitSeconds > 0)
+        // 繁育或升级进行中时不要插队，等它们结束再合。
+        if (_roundActive || _awaitingBreed || _breedRequest.Active) return;
+        if (TrySendMerge(force: false, out var reason)) return;
+        // 没发出去就把下一次检查推后，避免每个心跳都重算一遍。
+        if (_nextMergeCheckAt <= DateTime.Now) _nextMergeCheckAt = DateTime.Now.AddSeconds(15);
+        if (reason.Length > 0) _log.Write(reason);
+    }
+
+    /// <summary>
+    /// 发起一次合成。force=true 时忽略库存阈值（用户在页面上点「立即合成一次」）。
+    /// 返回 false 表示没有发出去，reason 说明原因（空字符串表示只是安静地等待）。
+    /// </summary>
+    private bool TrySendMerge(bool force, out string reason)
+    {
+        reason = "";
+        if (_awaitingMerge) { reason = "上一笔合成还在进行中，稍候。"; return false; }
+        if (!_chkMerge.Checked && !force) return false;
+        if (!_armed || !_bridgeVersionOk || !_bridgeAllowsActions)
+        {
+            reason = "自动合成未执行：需要先放行动作（ARM）并保持桥接连接。";
+            return false;
+        }
+        if (!_client.Connected) { reason = "自动合成未执行：桥接未连接。"; return false; }
+        if (_gameBusy)
+        {
+            reason = "游戏正在处理请求或功能窗口正在使用，稍后再合成。";
+            _nextMergeCheckAt = DateTime.Now.AddSeconds(15);
+            return false;
+        }
+        if (_windowLocked) { reason = "窗口自检已锁停动作：" + _windowLockReason; return false; }
+        if (_lastFish == null) { reason = "还没读到鱼群数据，稍候。"; return false; }
+        if (_upgradePending || _awaitingUpgrade || _statePending || _serverAuditPending)
+        {
+            reason = "正在处理其它动作，稍后再合成。";
+            return false;
+        }
+        if (!force && _actionWaitSeconds > 0)
         {
             _nextMergeCheckAt = DateTime.Now.AddSeconds(_actionWaitSeconds);
-            return;
+            return false;
         }
-        var reserved = Selection.SeasonalReservedTypes();
+
+        var excluded = _settings.AutoMergeExcludeSeasonal;
+        var reserved = excluded ? Selection.SeasonalReservedTypes() : null;
         var picks = Selection.PickMergeCandidates(_lastFish, 10, reserved);
         if (picks.Count < 10)
         {
-            _log.Write($"仓库 {_lastFish.Count} 条，但可用于合成的鱼不足 10 条（已排除赛季鱼与配方鱼），暂不合成。");
+            reason = excluded
+                ? $"仓库 {_lastFish.Count} 条，但可用于合成的鱼不足 10 条（已排除赛季鱼与配方鱼），暂不合成。"
+                : $"仓库 {_lastFish.Count} 条，但可用于合成的鱼不足 10 条，暂不合成。";
             _nextMergeCheckAt = DateTime.Now.AddSeconds(120);
-            return;
+            return false;
         }
+
         _awaitingMerge = true;
         _mergeRequestedAt = DateTime.Now;
         _preMergeSnapshot = _lastFish;
-        _log.Write($"仓库 {_lastFish.Count} 条超过 {_settings.AutoMergeThreshold}，发起自动合成：{string.Join(",", picks.Select(p => p.id))}");
+        _log.Write(force
+            ? $"手动触发合成：{string.Join(",", picks.Select(p => p.id))}"
+            : $"仓库 {_lastFish.Count} 条超过 {_settings.AutoMergeThreshold}，发起自动合成：{string.Join(",", picks.Select(p => p.id))}");
         _client.Send("MERGE " + string.Join(" ", picks.Select(p => p.id)));
         _lastActionAt = DateTime.Now;
+        return true;
+    }
+
+    /// <summary>手动触发一次合成，忽略库存阈值。结果通过日志说明。</summary>
+    private void MergeNow()
+    {
+        if (TrySendMerge(force: true, out var reason) || reason.Length == 0) return;
+        _log.Write(reason);
+        UpdateMergeStatus();
     }
 
     private void OnLine(string line) => Ui(() => ProcessLine(line));
@@ -1172,8 +1255,7 @@ private const string ExpectedBridgeVersion = "0.28.0";
             RequestState();
         }
 
-        if (!_awaitingMerge && !_roundActive && !_awaitingBreed && !_breedRequest.Active &&
-            DateTime.Now >= _nextMergeCheckAt) MaybeAutoMerge();
+        if (!_awaitingMerge && _settings.AutoMerge && DateTime.Now >= _nextMergeCheckAt) MaybeAutoMerge();
 
         if (_roundActive)
         {
@@ -1302,6 +1384,42 @@ private const string ExpectedBridgeVersion = "0.28.0";
         _lastActionAt = DateTime.Now;
     }
 
+    /// <summary>自动合成页面的状态行：开关、阈值、候选数量和下一次检查时间。</summary>
+    private void UpdateMergeStatus()
+    {
+        if (_lblMergeStatus.IsDisposed) return;
+
+        var total = _lastFish?.Count ?? -1;
+        _lblMergeStatus.Text = total < 0
+            ? UiLanguage.T("仓库：等待鱼群数据…")
+            : UiLanguage.T($"仓库：{total} 条　阈值：{_settings.AutoMergeThreshold} 条　" +
+                           (total > _settings.AutoMergeThreshold ? "已超过阈值，可合成" : "未达阈值"));
+
+        var reserved = _settings.AutoMergeExcludeSeasonal ? Selection.SeasonalReservedTypes() : null;
+        var picks = _lastFish == null ? new List<FishDto>() : Selection.PickMergeCandidates(_lastFish, 10, reserved);
+        if (_lastFish == null)
+        {
+            _lblMergePlan.Text = UiLanguage.T("候选：等待鱼群数据…");
+        }
+        else if (picks.Count < 10)
+        {
+            _lblMergePlan.Text = UiLanguage.T($"候选：{picks.Count}/10 条，凑不满一次合成（需 10 条）");
+        }
+        else
+        {
+            var names = picks.Select(f => f.Name).Distinct().Take(5);
+            _lblMergePlan.Text = UiLanguage.T($"候选：10/10 条可合成　") + string.Join("、", names) + " 等";
+        }
+
+        if (_awaitingMerge) _lblMergeStatus.Text = UiLanguage.T("正在合成中…");
+        else if (_settings.AutoMerge && _chkMerge.Checked && _armed && _client.Connected &&
+                 _nextMergeCheckAt != DateTime.MinValue && DateTime.Now < _nextMergeCheckAt)
+        {
+            var left = (_nextMergeCheckAt - DateTime.Now).TotalSeconds;
+            _lblMergeStatus.Text += UiLanguage.T($"　下次检查 {left / 60.0:F1} 分后");
+        }
+    }
+
     private void UpdateStatusLabels()
     {
         _lblProcess.Text = UiLanguage.T("游戏进程：" + GameProcess.Describe());
@@ -1361,5 +1479,6 @@ private const string ExpectedBridgeVersion = "0.28.0";
 
         _btnArm.Text = UiLanguage.T(_armed ? "解除 ARM" : "ARM（放行动作）");
         UpdateDashboardSummary();
+        UpdateMergeStatus();
     }
 }

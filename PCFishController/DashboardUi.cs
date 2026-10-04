@@ -157,13 +157,14 @@ internal sealed partial class MainForm
         brand.Controls.AddRange(new Control[] { mark, title, brandSub });
         sidebar.Controls.Add(brand);
 
-        var menu = new Panel { Dock = DockStyle.Top, Height = 330, Padding = new Padding(12, 8, 12, 0) };
+        var menu = new Panel { Dock = DockStyle.Top, Height = 380, Padding = new Padding(12, 8, 12, 0) };
         AddNav(menu, "overview", "◇   概览", 0);
         AddNav(menu, "breeding", "♥   自动繁育", 50);
-        AddNav(menu, "warehouse", "▤   仓库", 100);
-        AddNav(menu, "synthesis", "◇   合成路线", 150);
-        AddNav(menu, "logs", "≡   日志", 200);
-        AddNav(menu, "settings", "⚙   设置", 250);
+        AddNav(menu, "merge", "▣   自动合成", 100);
+        AddNav(menu, "warehouse", "▤   仓库", 150);
+        AddNav(menu, "synthesis", "◇   合成路线", 200);
+        AddNav(menu, "logs", "≡   日志", 250);
+        AddNav(menu, "settings", "⚙   设置", 300);
         sidebar.Controls.Add(menu);
         sidebar.Controls.SetChildIndex(menu, 0);
         var foot = Label("本地连接  ·  后台运行", 8, false, Muted);
@@ -239,6 +240,7 @@ internal sealed partial class MainForm
 
         BuildOverview(body);
         BuildBreeding(body);
+        BuildMerge(body);
         BuildWarehouse(body);
         BuildCollection(body);
         BuildSynthesis(body);
@@ -277,6 +279,7 @@ internal sealed partial class MainForm
         var heading = key switch
         {
             "breeding" => ("自动繁育", "控制检查周期和繁育条件"),
+            "merge" => ("自动合成", "仓库超过阈值时自动合并，排除赛季鱼与配方鱼"),
             "warehouse" => ("仓库", "查看鱼群、繁育次数与冷却时间"),
             "synthesis" => ("合成路线", "根据 Wiki 配方查看材料状态并设置繁育目标"),
             "collection" => ("图鉴 / 目标", "查看已发现鱼种，设置最终目标和繁育路线"),
@@ -292,6 +295,11 @@ internal sealed partial class MainForm
         if (key == "collection") RefreshCollectionPage();
         if (key == "synthesis" && _client.Connected && !_statePending) RequestState();
         if (key == "synthesis") RefreshSynthesisPage();
+        if (key == "merge")
+        {
+            if (_client.Connected && !_statePending) RequestState();
+            UpdateMergeStatus();
+        }
     }
 
     private void AddPage(Panel body, string key, Panel page)
@@ -399,7 +407,7 @@ internal sealed partial class MainForm
         AddPage(body, "breeding", page);
         var settings = Surface();
         settings.Dock = DockStyle.Top;
-        settings.Height = 268;
+        settings.Height = 250;
         var heading = Label("自动运行", 12, true);
         heading.SetBounds(20, 15, 300, 32);
         _chkAuto.SetBounds(22, 58, 160, 36);
@@ -430,28 +438,10 @@ internal sealed partial class MainForm
         _numMinGrade.Value = Math.Clamp(_settings.MinGrade, 0, 6);
         StyleNumber(_numMinGrade);
         var hint = Label("每次检查会使用现有繁育计数器，优先选择目标路线、高稀有度且已结束冷却的鱼。", 9, false, Muted);
-        hint.SetBounds(22, 188, 620, 24);
-        var mergeTitle = Label("自动合成阈值", 9, false, Muted);
-        mergeTitle.SetBounds(410, 110, 130, 25);
-        _numMergeThreshold.SetBounds(410, 143, 83, 30);
-        _numMergeThreshold.Minimum = 0;
-        _numMergeThreshold.Maximum = 5000;
-        _numMergeThreshold.Increment = 50;
-        _numMergeThreshold.Value = Math.Clamp(_settings.AutoMergeThreshold, 0, 5000);
-        StyleNumber(_numMergeThreshold);
-        var mergeHint = Label("排除赛季鱼与赛季配方鱼，优先使用 0 繁育次数和低稀有度的鱼。", 9, false, Muted);
-        mergeHint.SetBounds(22, 210, 700, 24);
-        var safetyTitle = Label("合成后安全等待（秒）", 9, false, Muted);
-        safetyTitle.SetBounds(560, 110, 200, 25);
-        _numMergeSafety.SetBounds(560, 143, 83, 30);
-        _numMergeSafety.Minimum = 1;
-        _numMergeSafety.Maximum = 60;
-        _numMergeSafety.Increment = 1;
-        _numMergeSafety.Value = Math.Clamp(_settings.MergeSafetySeconds, 1, 60);
-        StyleNumber(_numMergeSafety);
-        var safetyHint = Label("合成会等结果动画播完、自动关掉弹窗，再等待这段时间才进行下一次操作。", 9, false, Muted);
-        safetyHint.SetBounds(22, 232, 700, 24);
-        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, mergeTitle, _numMergeThreshold, safetyTitle, _numMergeSafety, hint, mergeHint, safetyHint });
+        hint.SetBounds(22, 188, 700, 24);
+        var hint2 = Label("合成相关的阈值和等待时间已移到「自动合成」页面。", 9, false, Muted);
+        hint2.SetBounds(22, 212, 700, 24);
+        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, hint, hint2 });
 
         var manual = Surface();
         manual.Dock = DockStyle.Top;
@@ -542,6 +532,90 @@ internal sealed partial class MainForm
         }
         catch { }
         return SystemIcons.Application.ToBitmap();
+    }
+
+    private void BuildMerge(Panel body)
+    {
+        var page = new Panel();
+        AddPage(body, "merge", page);
+
+        var settings = Surface();
+        settings.Dock = DockStyle.Top;
+        settings.Height = 250;
+        var heading = Label("自动运行", 12, true);
+        heading.SetBounds(20, 15, 300, 32);
+        _chkMerge.SetBounds(22, 58, 170, 36);
+        _chkMerge.Text = "自动合成";
+        _chkMerge.Checked = _settings.AutoMerge;
+        StyleCheck(_chkMerge);
+        _chkMergeExcludeSeasonal.SetBounds(205, 58, 250, 36);
+        _chkMergeExcludeSeasonal.Text = "排除赛季鱼与配方鱼";
+        _chkMergeExcludeSeasonal.Checked = _settings.AutoMergeExcludeSeasonal;
+        StyleCheck(_chkMergeExcludeSeasonal);
+
+        var thresholdTitle = Label("触发阈值（仓库鱼数）", 9, false, Muted);
+        thresholdTitle.SetBounds(22, 110, 190, 25);
+        _numMergeThreshold.SetBounds(22, 143, 90, 30);
+        _numMergeThreshold.Minimum = 0;
+        _numMergeThreshold.Maximum = 5000;
+        _numMergeThreshold.Increment = 50;
+        _numMergeThreshold.Value = Math.Clamp(_settings.AutoMergeThreshold, 0, 5000);
+        StyleNumber(_numMergeThreshold);
+
+        var safetyTitle = Label("合成后安全等待（秒）", 9, false, Muted);
+        safetyTitle.SetBounds(240, 110, 210, 25);
+        _numMergeSafety.SetBounds(240, 143, 90, 30);
+        _numMergeSafety.Minimum = 1;
+        _numMergeSafety.Maximum = 60;
+        _numMergeSafety.Increment = 1;
+        _numMergeSafety.Value = Math.Clamp(_settings.MergeSafetySeconds, 1, 60);
+        StyleNumber(_numMergeSafety);
+
+        var ruleHint = Label("每次合并 10 条；优先使用 0 繁育次数、稀有度最低的鱼。", 9, false, Muted);
+        ruleHint.SetBounds(22, 185, 700, 24);
+        var flowHint = Label("流程：打开功能窗口 → 切到合成标签 → 逐条点「+」放鱼 → 点「合成」→ 等动画并关掉结果弹窗。", 9, false, Muted);
+        flowHint.SetBounds(22, 211, 860, 24);
+
+        settings.Controls.AddRange(new Control[]
+        {
+            heading, _chkMerge, _chkMergeExcludeSeasonal, thresholdTitle, _numMergeThreshold,
+            safetyTitle, _numMergeSafety, ruleHint, flowHint
+        });
+
+        var manual = Surface();
+        manual.Dock = DockStyle.Top;
+        manual.Height = 120;
+        manual.Margin = new Padding(0, 16, 0, 0);
+        var manualTitle = Label("手动控制", 12, true);
+        manualTitle.SetBounds(20, 15, 300, 32);
+        _btnMergeNow.Text = "立即合成一次";
+        StyleAction(_btnMergeNow, Color.FromArgb(120, 88, 205));
+        _btnMergeNow.SetBounds(22, 58, 175, 40);
+        var manualHint = Label("忽略阈值，直接挑 10 条合成一次；需先 ARM 并与桥接保持连接。", 9, false, Muted);
+        manualHint.SetBounds(212, 62, 640, 28);
+        manual.Controls.AddRange(new Control[] { manualTitle, _btnMergeNow, manualHint });
+
+        var status = Surface();
+        status.Dock = DockStyle.Top;
+        status.Height = 130;
+        status.Margin = new Padding(0, 16, 0, 0);
+        var statusTitle = Label("▏ 当前状态", 11, true);
+        statusTitle.Dock = DockStyle.Top;
+        statusTitle.Height = 35;
+        _lblMergeStatus.Dock = DockStyle.Top;
+        _lblMergeStatus.Height = 34;
+        _lblMergeStatus.ForeColor = Blue;
+        _lblMergeStatus.Font = new Font("Microsoft YaHei UI", 10F, FontStyle.Bold);
+        _lblMergePlan.Dock = DockStyle.Top;
+        _lblMergePlan.Height = 34;
+        _lblMergePlan.ForeColor = Muted;
+        status.Controls.Add(_lblMergePlan);
+        status.Controls.Add(_lblMergeStatus);
+        status.Controls.Add(statusTitle);
+
+        page.Controls.Add(status);
+        page.Controls.Add(manual);
+        page.Controls.Add(settings);
     }
 
     private void BuildWarehouse(Panel body)

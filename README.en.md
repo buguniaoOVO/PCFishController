@@ -35,7 +35,7 @@ Breeding goes through the game's own data and network entry points. The controll
 
 ## Interface
 
-Overview, Auto Breeding, Warehouse, Synthesis Route, Logs and Settings. The Warehouse lists species, rarity, stars, remaining breeds and cooldown, with search, filters and sortable columns. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
+Overview, Auto Breeding, Auto Synthesis, Warehouse, Synthesis Route, Logs and Settings. The Auto Synthesis page holds the on/off switch, trigger threshold, the season/recipe exclusion toggle and the safety wait, plus a one-shot "Synthesize Once Now" button and the current warehouse, candidate and next-check status. The Warehouse lists species, rarity, stars, remaining breeds and cooldown, with search, filters and sortable columns. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
 
 ## One-click setup
 

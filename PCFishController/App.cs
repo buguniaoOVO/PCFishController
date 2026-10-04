@@ -21,6 +21,12 @@ internal sealed class AppSettings
     /// <summary>仓库总鱼数超过该值时自动合成。</summary>
     public int AutoMergeThreshold { get; set; } = 900;
 
+    /// <summary>自动合成总开关。单独控制，不再依赖自动繁育是否开启。</summary>
+    public bool AutoMerge { get; set; } = true;
+
+    /// <summary>自动合成是否排除赛季鱼与赛季配方里用到的鱼，留作合成路线材料。</summary>
+    public bool AutoMergeExcludeSeasonal { get; set; } = true;
+
     /// <summary>
     /// 合成收尾后的安全等待（秒）。
     /// 合成会触发结果动画和弹窗，助手要等动画结束、关掉弹窗，再等这段时间
