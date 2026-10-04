@@ -43,6 +43,10 @@ public class AutoHelperBehaviour : MonoBehaviour
             // 网络回包的游戏数据更新在主线程完成，再处理下一条桥接命令。
             GameBridge.DrainMainThreadWork();
 
+            // 挡路弹窗（好友邀请领爱心）在游戏侧弹得很勤，出现就立刻关掉，
+            // 否则它会盖住功能窗口，用户和助手都动不了。
+            PopupGuard.Pump();
+
             BridgeServer.Pump();
         }
         catch (Exception ex)

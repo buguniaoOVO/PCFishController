@@ -31,6 +31,7 @@ Breeding goes through the game's own data and network entry points. The controll
 - Synthesis follows real click steps: open the function window, switch to the Merge tab, click "+" once per fish, then click Synthesize. It waits for the animation, closes the result popup, then closes the window, with a pause between each step
 - Dismisses the game's own dialog (for example "a network error occurred") when it appears, records it, and retries later
 - A configurable safety wait (5 seconds by default) runs after each craft before the next action
+- Closes the game's own "invite a friend for a free heart" popup when it appears. That window covers the function window, so the assistant clicks its Close button through the game's own entry point, leaving other dialogs untouched
 
 ## Interface
 

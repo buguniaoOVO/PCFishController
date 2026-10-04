@@ -238,6 +238,7 @@ internal static class BridgeServer
         {
             case "STATE": request.Client.Out.Enqueue(BuildState()); return;
             case "MERGEPROBE": request.Client.Out.Enqueue(BuildText("mergeprobe", MergeBridge.Describe())); return;
+            case "POPUPPROBE": request.Client.Out.Enqueue(BuildText("popupprobe", PopupGuard.Describe())); return;
             case "MERGE": Merge(request); return;
             case "BREEDSTATUS":
                 request.RequestId = request.Args.Length > 0 ? request.Args[0] : "";
