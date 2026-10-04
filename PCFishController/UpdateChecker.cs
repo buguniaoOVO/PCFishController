@@ -135,8 +135,20 @@ internal static class UpdateChecker
     {
         var info = new UpdateInfo { CurrentVersion = CurrentVersion };
 
-        // 首选：读取 releases/latest 的 302 跳转拿到版本号。
-        // 这条路不使用 API，因此不受每小时 60 次的未认证配额限制。
+        // 首选：GitHub API 的 releases/latest。它取的是权威结果，不会因为 CDN 缓存
+        // 落后而漏报刚发布的版本。每小时只查一次，远低于未认证的 60 次配额。
+        try
+        {
+            var api = await CheckViaApiAsync(info);
+            if (api) return info;
+        }
+        catch
+        {
+            // 落到跳转方式
+        }
+
+        // 备用：读 releases/latest 的 302 跳转。不用 API，配额用尽时也能用，
+        // 代价是可能受 CDN 缓存影响，刚发布的版本会晚一点才看到。
         try
         {
             var tag = await ResolveLatestTagAsync();
@@ -166,10 +178,17 @@ internal static class UpdateChecker
         }
         catch
         {
-            // 落到 API 方式
+            // 两种方式都失败时，下面的兜底会用 info.Message 说明情况
         }
 
-        // 备用：GitHub API。配额用尽或网络异常时返回可读的错误信息。
+        if (string.IsNullOrEmpty(info.Message))
+            info.Message = "检查更新失败：无法连接 GitHub。";
+        return info;
+    }
+
+    /// <summary>走 GitHub API 查询最新发布。成功返回 true，失败返回 false 交给备用方式。</summary>
+    private static async Task<bool> CheckViaApiAsync(UpdateInfo info)
+    {
         try
         {
             using var client = CreateClient();
@@ -177,12 +196,13 @@ internal static class UpdateChecker
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
             {
                 info.Message = "仓库还没有发布任何版本。";
-                return info;
+                info.Ok = true;
+                return true;
             }
             if (!response.IsSuccessStatusCode)
             {
-                info.Message = $"查询失败：HTTP {(int)response.StatusCode}。";
-                return info;
+                // 例如未认证配额用尽（403）。交给备用方式再试一次。
+                return false;
             }
 
             var json = await response.Content.ReadAsStringAsync();
@@ -225,12 +245,11 @@ internal static class UpdateChecker
                 : info.HasUpdate
                     ? $"发现新版本 {info.LatestTag}，当前 {CurrentVersion}。"
                     : $"已是最新版本（{CurrentVersion}）。";
-            return info;
+            return true;
         }
-        catch (Exception ex)
+        catch
         {
-            info.Message = "检查更新失败：" + ex.Message;
-            return info;
+            return false;
         }
     }
 
