@@ -431,8 +431,8 @@ internal sealed partial class MainForm
         StyleNumber(_numMinGrade);
         var hint = Label("每次检查会使用现有繁育计数器，优先选择目标路线、高稀有度且已结束冷却的鱼。", 9, false, Muted);
         hint.SetBounds(22, 188, 620, 24);
-        var mergeTitle = Label("自动合成（仓库超过该数量时启用）", 9, false, Muted);
-        mergeTitle.SetBounds(410, 110, 260, 25);
+        var mergeTitle = Label("自动合成阈值", 9, false, Muted);
+        mergeTitle.SetBounds(410, 110, 130, 25);
         _numMergeThreshold.SetBounds(410, 143, 83, 30);
         _numMergeThreshold.Minimum = 0;
         _numMergeThreshold.Maximum = 5000;
@@ -442,8 +442,8 @@ internal sealed partial class MainForm
         var mergeHint = Label("排除赛季鱼与赛季配方鱼，优先使用 0 繁育次数和低稀有度的鱼。", 9, false, Muted);
         mergeHint.SetBounds(22, 210, 700, 24);
         var safetyTitle = Label("合成后安全等待（秒）", 9, false, Muted);
-        safetyTitle.SetBounds(520, 110, 160, 25);
-        _numMergeSafety.SetBounds(520, 143, 83, 30);
+        safetyTitle.SetBounds(560, 110, 200, 25);
+        _numMergeSafety.SetBounds(560, 143, 83, 30);
         _numMergeSafety.Minimum = 1;
         _numMergeSafety.Maximum = 60;
         _numMergeSafety.Increment = 1;
