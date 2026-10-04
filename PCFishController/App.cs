@@ -21,6 +21,13 @@ internal sealed class AppSettings
     /// <summary>仓库总鱼数超过该值时自动合成。</summary>
     public int AutoMergeThreshold { get; set; } = 900;
 
+    /// <summary>
+    /// 合成收尾后的安全等待（秒）。
+    /// 合成会触发结果动画和弹窗，助手要等动画结束、关掉弹窗，再等这段时间
+    /// 才发起下一次操作，避免连着灌命令把服务器回包和界面状态搅乱。
+    /// </summary>
+    public int MergeSafetySeconds { get; set; } = 5;
+
     /// <summary>自动繁育总开关。</summary>
     public bool AutoBreed { get; set; }
 

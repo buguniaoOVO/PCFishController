@@ -28,6 +28,9 @@ Breeding goes through the game's own data and network entry points. The controll
 - Reads your remaining breed counts from the server before each round, to filter out a stale local cache
 - Tracks delayed replies and checks fish changes before resuming a timed-out request
 - Runs auto synthesis when the warehouse passes a configurable threshold (900 by default). It excludes season fish and season recipe fish, prefers fish with no breed uses left, and confirms each craft by re-reading the fish list
+- Synthesis follows real click steps: open the function window, switch to the Merge tab, click "+" once per fish, then click Synthesize. It waits for the animation, closes the result popup, then closes the window, with a pause between each step
+- Dismisses the game's own dialog (for example "a network error occurred") when it appears, records it, and retries later
+- A configurable safety wait (5 seconds by default) runs after each craft before the next action
 
 ## Interface
 

@@ -101,7 +101,7 @@ internal static class BridgeServer
             }
         }
         if (_pendingBreed != null && !_pendingBreedTimeoutReported &&
-            (DateTime.UtcNow - _pendingBreedAt).TotalSeconds > 25)
+            (DateTime.UtcNow - _pendingBreedAt).TotalSeconds > (_pendingBreed.Command == "MERGE" ? 45 : 25))
         {
             _pendingBreedTimeoutReported = true;
             if (_pendingBreed.Command == "MERGE")
@@ -427,14 +427,19 @@ internal static class BridgeServer
         _actions++;
         Journal.Write($"后台合成开始：{string.Join(",", request.Args)}");
 
-        var state = new MergeRun((ok, message) =>
+        MergeRun state = null;
+        state = new MergeRun((ok, message) =>
         {
             _pendingBreed = null;
             _pendingBreedTimeoutReported = false;
-            Reply(request, "merge", ok, false, "", message, ok ? "" : "game_state");
+            // 游戏自己弹了网络错误提示时，这是服务端拒绝或丢包，不是界面被改坏。
+            // 报成 busy 让控制器稍后自动重试，而不是要求用户手动 ARM。
+            var kind = ok ? "" : (state != null && state.GameErrorSeen ? "busy" : "game_state");
+            Reply(request, "merge", ok, false, "", message, kind);
         }, before);
 
         // 串行执行：每一步完成后才进入下一步，保证关闭弹窗一定在关闭窗口之前。
+        // 打开窗口 -> 清空 -> 逐条点“+”放鱼 -> 点合成 -> 等动画 -> 关结果弹窗 -> 关窗口。
         Step(0.4, OpenWindow);
 
         void Step(double delay, Action next)
@@ -445,18 +450,41 @@ internal static class BridgeServer
             state.Opened = MergeBridge.OpenMergeWindow(out var openDetail);
             state.Log(openDetail);
             if (!state.Opened) { state.Finish(false, openDetail); return; }
-            Step(0.6, FillFish);
+            Step(0.8, ResetSlots);
         }
 
-        void FillFish()
+        void ResetSlots()
         {
             var found = MergeBridge.Find();
             if (found == null) { state.Finish(false, "找不到合成面板"); return; }
             state.Ui = found;
-            state.Placed = MergeBridge.FillParents(found, request.Args, out var fillDetail);
-            state.Log(fillDetail);
-            if (state.Placed != MergeBridge.RequiredCount) { state.Finish(false, fillDetail); return; }
-            Step(0.6, ClickMerge);
+            MergeBridge.ClearParents(found, out var clearDetail);
+            state.Log(clearDetail);
+            Step(0.4, () => FillOne(0));
+        }
+
+        // 每 150 毫秒放一条鱼，模拟人手逐次点“+”。放完 10 条就点合成。
+        void FillOne(int index)
+        {
+            if (state.Ui == null) { state.Finish(false, "合成面板丢失"); return; }
+            if (index >= request.Args.Length)
+            {
+                state.Placed = MergeBridge.FilledCount(state.Ui);
+                state.Log($"已放鱼 {state.Placed}/{request.Args.Length}");
+                if (state.Placed != MergeBridge.RequiredCount) { state.Finish(false, "放鱼数量不足"); return; }
+                Step(0.5, ClickMerge);
+                return;
+            }
+            var placed = MergeBridge.AddParent(state.Ui, request.Args[index], out var addDetail);
+            if (!placed)
+            {
+                state.Log(addDetail.Length > 0 ? addDetail : $"第 {index + 1} 条未被接受");
+                state.Placed = MergeBridge.FilledCount(state.Ui);
+                state.Log($"已放鱼 {state.Placed}/{request.Args.Length}");
+                state.Finish(false, "有鱼未被合成窗口接受");
+                return;
+            }
+            Step(0.15, () => FillOne(index + 1));
         }
 
         void ClickMerge()
@@ -465,15 +493,28 @@ internal static class BridgeServer
             var clicked = MergeBridge.ClickMerge(state.Ui, out var clickDetail);
             state.Log(clickDetail);
             if (!clicked) { state.Finish(false, clickDetail); return; }
-            Step(0.6, () => WatchResult(0));
+            Step(0.8, () => WatchResult(0));
         }
 
-        // 每 400 毫秒看一次结果弹窗，出现就关掉；轮询期间不进行其它步骤。
+        // 每 350~400 毫秒看一次：结果弹窗一出现就关掉；弹窗还没出现就先等动画播完。
         void WatchResult(int attempt)
         {
             if (state.Ui == null) { state.Finish(false, "合成面板丢失"); return; }
             try
             {
+                // 游戏如果弹了通用提示（例如「发生网络错误」），先点掉它，它挡住了合成结果。
+                if (!MergeBridge.ResultOpen(state.Ui))
+                {
+                    var dismiss = MergeBridge.CloseConfirm();
+                    if (dismiss != null)
+                    {
+                        state.Log(dismiss);
+                        Journal.Write("后台合成：" + dismiss);
+                        state.GameErrorSeen = true;
+                    }
+                }
+                // 结果弹窗优先：只要它显示着就关掉，不等动画标志。
+                // 动画标志偶尔会滞后，先看弹窗才能保证它一定被关掉。
                 if (MergeBridge.ResultOpen(state.Ui))
                 {
                     var closeDetail = MergeBridge.CloseResult(state.Ui);
@@ -481,15 +522,25 @@ internal static class BridgeServer
                     Journal.Write("后台合成结果弹窗：" + closeDetail);
                     if (MergeBridge.ResultOpen(state.Ui))
                     {
+                        if (attempt >= 40) { state.Log("结果弹窗反复未关闭，交给收尾再关一次"); Step(0.2, CloseUp); return; }
                         state.Log("结果弹窗仍在，稍后再关一次");
                         Step(0.5, () => WatchResult(attempt + 1));
                         return;
                     }
-                    Step(0.5, CloseUp);
+                    Step(0.6, CloseUp);
                     return;
                 }
-                if (attempt >= 25) { state.Log("等待结果弹窗超时"); Step(0.2, CloseUp); return; }
-                Step(0.4, () => WatchResult(attempt + 1));
+                // 弹窗还没出来：说明合成动画还在播，等它结束（结束时游戏自己的回调会放出弹窗）。
+                if (attempt >= 40)
+                {
+                    if (state.GameErrorSeen)
+                        state.Log("游戏提示网络错误，本笔合成未生效");
+                    else
+                        state.Log(MergeBridge.FxPlaying(state.Ui) ? "等待结果弹窗超时（动画仍在）" : "等待结果弹窗超时");
+                    Step(0.2, CloseUp);
+                    return;
+                }
+                Step(0.35, () => WatchResult(attempt + 1));
             }
             catch (Exception ex)
             {
@@ -501,6 +552,17 @@ internal static class BridgeServer
 
         void CloseUp()
         {
+            // 收尾保险：关窗口之前再确认一次结果弹窗已经关掉，免得它留在屏幕上。
+            try
+            {
+                if (state.Ui != null && MergeBridge.ResultOpen(state.Ui))
+                {
+                    var finalClose = MergeBridge.CloseResult(state.Ui);
+                    state.Log("收尾再关一次结果弹窗：" + finalClose);
+                    Journal.Write("后台合成收尾补关结果弹窗：" + finalClose);
+                }
+            }
+            catch (Exception ex) { Journal.Error("收尾补关结果弹窗失败", ex); }
             try { MergeBridge.CloseWindow(); state.Log("已关闭功能窗口"); }
             catch (Exception ex) { Journal.Error("关闭功能窗口失败", ex); }
             Step(0.4, Verify);

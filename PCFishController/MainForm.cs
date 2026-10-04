@@ -15,7 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
-    private const string ExpectedBridgeVersion = "0.26.0";
+private const string ExpectedBridgeVersion = "0.27.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
@@ -39,6 +39,7 @@ internal sealed partial class MainForm : Form
     private readonly NumericUpDown _numIvMax = new();
     private readonly NumericUpDown _numMinGrade = new();
     private readonly NumericUpDown _numMergeThreshold = new();
+    private readonly NumericUpDown _numMergeSafety = new();
     private readonly Button _btnOnce = new();
     private readonly Button _btnUpgrade = new();
     private readonly Button _btnState = new();
@@ -353,6 +354,11 @@ internal sealed partial class MainForm : Form
             _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
             _settings.Save();
         };
+        _numMergeSafety.ValueChanged += (_, _) =>
+        {
+            _settings.MergeSafetySeconds = (int)_numMergeSafety.Value;
+            _settings.Save();
+        };
 
         _btnOnce.Click += (_, _) =>
         {
@@ -438,6 +444,7 @@ internal sealed partial class MainForm : Form
         _settings.BreedIntervalMaxSeconds = (int)_numIvMax.Value * 60;
         _settings.MinGrade = (int)_numMinGrade.Value;
         _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
+        _settings.MergeSafetySeconds = (int)_numMergeSafety.Value;
         _settings.Language = UiLanguage.Current;
         _settings.GoalType = _goalTypeCombo?.SelectedValue?.ToString() ?? _settings.GoalType;
         _settings.GoalStar = _goalStarCombo == null ? _settings.GoalStar : Math.Clamp(_goalStarCombo.SelectedIndex + 1, 1, 5);
@@ -940,7 +947,10 @@ internal sealed partial class MainForm : Form
             if (msg.ok)
             {
                 _log.Write("✓ 自动合成成功：" + msg.msg + "；刷新鱼群。");
-                _nextMergeCheckAt = DateTime.Now.AddSeconds(3);
+                // 合成结果动画和弹窗已在桥接侧收尾；这里再等用户设定的安全时间，
+                // 让服务器回包和界面稳定下来，才发起下一次操作。
+                var safety = Math.Clamp(_settings.MergeSafetySeconds, 1, 60);
+                _nextMergeCheckAt = DateTime.Now.AddSeconds(3 + safety);
                 RequestState();
             }
             else
@@ -1153,7 +1163,7 @@ internal sealed partial class MainForm : Form
             }
         }
 
-        if (_awaitingMerge && (DateTime.Now - _mergeRequestedAt).TotalSeconds > 30)
+        if (_awaitingMerge && (DateTime.Now - _mergeRequestedAt).TotalSeconds > 60)
         {
             _awaitingMerge = false;
             _preMergeSnapshot = null;

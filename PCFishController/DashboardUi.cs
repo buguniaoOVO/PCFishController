@@ -399,7 +399,7 @@ internal sealed partial class MainForm
         AddPage(body, "breeding", page);
         var settings = Surface();
         settings.Dock = DockStyle.Top;
-        settings.Height = 240;
+        settings.Height = 268;
         var heading = Label("自动运行", 12, true);
         heading.SetBounds(20, 15, 300, 32);
         _chkAuto.SetBounds(22, 58, 160, 36);
@@ -441,7 +441,17 @@ internal sealed partial class MainForm
         StyleNumber(_numMergeThreshold);
         var mergeHint = Label("排除赛季鱼与赛季配方鱼，优先使用 0 繁育次数和低稀有度的鱼。", 9, false, Muted);
         mergeHint.SetBounds(22, 210, 700, 24);
-        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, mergeTitle, _numMergeThreshold, hint, mergeHint });
+        var safetyTitle = Label("合成后安全等待（秒）", 9, false, Muted);
+        safetyTitle.SetBounds(520, 110, 160, 25);
+        _numMergeSafety.SetBounds(520, 143, 83, 30);
+        _numMergeSafety.Minimum = 1;
+        _numMergeSafety.Maximum = 60;
+        _numMergeSafety.Increment = 1;
+        _numMergeSafety.Value = Math.Clamp(_settings.MergeSafetySeconds, 1, 60);
+        StyleNumber(_numMergeSafety);
+        var safetyHint = Label("合成会等结果动画播完、自动关掉弹窗，再等待这段时间才进行下一次操作。", 9, false, Muted);
+        safetyHint.SetBounds(22, 232, 700, 24);
+        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, mergeTitle, _numMergeThreshold, safetyTitle, _numMergeSafety, hint, mergeHint, safetyHint });
 
         var manual = Surface();
         manual.Dock = DockStyle.Top;

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using NN.PF.Core.Managers;
 using NN.PF.UI.Merge;
+using NN.PF.UI.Confirm;
 
 namespace PCFishAutoHelper;
 
@@ -102,29 +103,57 @@ internal static class MergeBridge
     }
 
     /// <summary>
-    /// 逐步放鱼：先清空，再对每条鱼调用游戏自己的 SetParent（等同于点一次“+”）。
-    /// 返回实际填入的条数。
+    /// 清空合成槽位。等同于点一次“重置”按钮。
     /// </summary>
-    internal static int FillParents(UIMerge ui, IList<string> ids, out string detail)
+    internal static bool ClearParents(UIMerge ui, out string detail)
     {
         detail = "";
-        var placed = 0;
         try
         {
             ui.ResetParent();
-            foreach (var id in ids)
-            {
-                if (string.IsNullOrEmpty(id)) continue;
-                if (ui.SetParent(id)) placed++;
-            }
-            detail = $"已放鱼 {placed}/{ids.Count}";
+            detail = "已清空合成槽位";
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Journal.Error("清空合成槽位失败", ex);
+            detail = "清空合成槽位失败：" + ex.GetBaseException().Message;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 放一条鱼：调用游戏自己的 SetParent，等同于点一次“+”。
+    /// 返回 true 表示游戏接受了这条鱼。
+    /// </summary>
+    internal static bool AddParent(UIMerge ui, string id, out string detail)
+    {
+        detail = "";
+        try
+        {
+            if (string.IsNullOrEmpty(id)) { detail = "鱼 id 为空"; return false; }
+            return ui.SetParent(id);
         }
         catch (Exception ex)
         {
             Journal.Error("放鱼到合成窗口失败", ex);
             detail = "放鱼失败：" + ex.GetBaseException().Message;
+            return false;
         }
-        return placed;
+    }
+
+    /// <summary>已放入合成槽的条数（只读）。</summary>
+    internal static int FilledCount(UIMerge ui)
+    {
+        try
+        {
+            var list = ui?.mergeFishList;
+            if (list == null) return 0;
+            var n = 0;
+            foreach (var id in list) if (!string.IsNullOrEmpty(id)) n++;
+            return n;
+        }
+        catch { return 0; }
     }
 
     /// <summary>点“合成”按钮。等价于点合成窗口里那个紫色合成按钮。</summary>
@@ -133,7 +162,7 @@ internal static class MergeBridge
         detail = "";
         try
         {
-            if (ui.mergeFishList == null || ui.mergeFishList.Length < RequiredCount)
+            if (FilledCount(ui) < RequiredCount)
             {
                 detail = "合成候选不足，游戏不会接受";
                 return false;
@@ -188,5 +217,54 @@ internal static class MergeBridge
                    ui.uiFishResult.gameObject.activeInHierarchy;
         }
         catch { return false; }
+    }
+
+    /// <summary>合成动画对象是否还在播放（只读）。动画结束后游戏才会把结果弹窗放出来。</summary>
+    internal static bool FxPlaying(UIMerge ui)
+    {
+        try
+        {
+            return ui?.uiFishResultFx != null && ui.uiFishResultFx.gameObject != null &&
+                   ui.uiFishResultFx.gameObject.activeInHierarchy;
+        }
+        catch { return false; }
+    }
+
+    /// <summary>
+    /// 找出屏幕上还开着的通用确认弹窗（游戏用它显示「发生网络错误」这类提示）。只读。
+    /// 合成被服务端拒绝时游戏弹的就是这个，不是合成结果弹窗。
+    /// </summary>
+    internal static UIConfirm FindConfirm()
+    {
+        try
+        {
+            var arr = UnityEngine.Object.FindObjectsOfType<UIConfirm>(true);
+            if (arr == null) return null;
+            for (var i = 0; i < arr.Length; i++)
+                if (arr[i] != null && arr[i].gameObject != null && arr[i].gameObject.activeInHierarchy)
+                    return arr[i];
+        }
+        catch (Exception ex) { Journal.Error("查找确认弹窗失败", ex); }
+        return null;
+    }
+
+    /// <summary>点掉通用确认弹窗（等同于点「确定」）。返回 null 表示没有弹窗。</summary>
+    internal static string CloseConfirm()
+    {
+        try
+        {
+            var confirm = FindConfirm();
+            if (confirm == null) return null;
+            var text = "";
+            try { text = confirm.txtMessage == null ? "" : confirm.txtMessage.text ?? ""; } catch { }
+            text = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+            confirm.Ok();
+            return text.Length > 0 ? "已关闭游戏提示：「" + text + "」" : "已关闭游戏提示弹窗";
+        }
+        catch (Exception ex)
+        {
+            Journal.Error("关闭确认弹窗失败", ex);
+            return "关闭提示弹窗失败：" + ex.GetBaseException().Message;
+        }
     }
 }
