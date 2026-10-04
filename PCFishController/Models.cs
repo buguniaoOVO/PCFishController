@@ -140,6 +140,39 @@ internal static class Selection
     internal static bool CanMerge(FishDto f) => f.bc <= 0 && !f.lk && !f.pl;
 
     /// <summary>
+    /// 自动合成候选：排除赛季鱼和赛季配方所需鱼，优先 0 繁育次数、再按稀有度从低到高。
+    /// 赛季鱼要留着做合成路线，任何还在繁殖次数内的鱼优先留给繁育。
+    /// </summary>
+    internal static List<FishDto> PickMergeCandidates(List<FishDto> fish, int count, ISet<string> reservedTypes)
+    {
+        if (fish == null) return new List<FishDto>();
+        return fish
+            .Where(f => !f.lk && !f.pl)
+            .Where(f => FishCatalog.Find(f.ty)?.Season is not > 0)
+            .Where(f => reservedTypes == null || !reservedTypes.Contains(f.ty ?? ""))
+            .OrderBy(f => f.bc > 0 ? 1 : 0)
+            .ThenBy(f => f.RarityTier)
+            .ThenBy(f => f.Stars)
+            .ThenBy(f => f.bc)
+            .Take(count)
+            .ToList();
+    }
+
+    /// <summary>赛季配方里出现的所有鱼型，作为自动合成的保护名单。</summary>
+    internal static HashSet<string> SeasonalReservedTypes()
+    {
+        var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var species in FishCatalog.Species)
+            if (species.Season > 0) reserved.Add(species.Code);
+        foreach (var recipe in WikiDatabase.Data.Recipes)
+        {
+            foreach (var ingredient in recipe.Ingredients)
+                if (!string.IsNullOrWhiteSpace(ingredient.Type)) reserved.Add(ingredient.Type);
+        }
+        return reserved;
+    }
+
+    /// <summary>
     /// 繁殖：挑两条还有繁殖次数、且已过冷却的鱼。
     ///
     /// **优先用高级的鱼** —— 这是用户明确要求的第一优先级：

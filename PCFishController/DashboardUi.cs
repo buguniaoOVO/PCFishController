@@ -430,8 +430,18 @@ internal sealed partial class MainForm
         _numMinGrade.Value = Math.Clamp(_settings.MinGrade, 0, 6);
         StyleNumber(_numMinGrade);
         var hint = Label("每次检查会使用现有繁育计数器，优先选择目标路线、高稀有度且已结束冷却的鱼。", 9, false, Muted);
-        hint.SetBounds(22, 188, 620, 28);
-        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, hint });
+        hint.SetBounds(22, 188, 620, 24);
+        var mergeTitle = Label("自动合成（仓库超过该数量时启用）", 9, false, Muted);
+        mergeTitle.SetBounds(410, 110, 260, 25);
+        _numMergeThreshold.SetBounds(410, 143, 83, 30);
+        _numMergeThreshold.Minimum = 0;
+        _numMergeThreshold.Maximum = 5000;
+        _numMergeThreshold.Increment = 50;
+        _numMergeThreshold.Value = Math.Clamp(_settings.AutoMergeThreshold, 0, 5000);
+        StyleNumber(_numMergeThreshold);
+        var mergeHint = Label("排除赛季鱼与赛季配方鱼，优先使用 0 繁育次数和低稀有度的鱼。", 9, false, Muted);
+        mergeHint.SetBounds(22, 210, 700, 24);
+        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, mergeTitle, _numMergeThreshold, hint, mergeHint });
 
         var manual = Surface();
         manual.Dock = DockStyle.Top;

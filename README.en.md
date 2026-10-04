@@ -27,6 +27,7 @@ Breeding goes through the game's own data and network entry points. The controll
 - Verifies breeding results against parent counts and the returned new fish ID
 - Reads your remaining breed counts from the server before each round, to filter out a stale local cache
 - Tracks delayed replies and checks fish changes before resuming a timed-out request
+- Runs auto synthesis when the warehouse passes a configurable threshold (900 by default). It excludes season fish and season recipe fish, prefers fish with no breed uses left, and confirms each craft by re-reading the fish list
 
 ## Interface
 

@@ -226,6 +226,8 @@ internal static class BridgeServer
         switch (request.Command)
         {
             case "STATE": request.Client.Out.Enqueue(BuildState()); return;
+            case "MERGEPROBE": request.Client.Out.Enqueue(BuildText("mergeprobe", MergeBridge.Describe())); return;
+            case "MERGE": Merge(request); return;
             case "BREEDSTATUS":
                 request.RequestId = request.Args.Length > 0 ? request.Args[0] : "";
                 if (BreedResults.TryGetValue(request.RequestId, out var completed))
@@ -379,6 +381,48 @@ internal static class BridgeServer
         _lastActionAt = DateTime.UtcNow;
         _actions++;
         Journal.Write($"后台繁育已发送：{string.Join(",", request.Args)}");
+    }
+
+    /// <summary>后台自动合成。候选由控制器选好，这里只负责提交并核对鱼群变化。</summary>
+    private static void Merge(Request request)
+    {
+        if (_pendingBreed != null)
+        {
+            Reply(request, "merge", false, false, "", "上一笔动作仍在等待结果");
+            return;
+        }
+        if (!ActionAllowed(request, "merge")) return;
+        GameBridge.TryGetDataManager(out var dmBefore);
+        var before = dmBefore == null ? null : GameBridge.Snapshot(dmBefore);
+        _preActionWindow = _windowCheckEnabled ? WindowGuard.Snapshot() : default;
+        if (!MergeBridge.TryMerge(request.Args, out var reason))
+        {
+            Reply(request, "merge", false, false, "", reason, "not_sent");
+            return;
+        }
+        GameBridge.RunOnMainThreadAfter(3, () =>
+        {
+            var changed = false;
+            try
+            {
+                GameBridge.TryGetDataManager(out var dmAfter);
+                var after = dmAfter == null ? null : GameBridge.Snapshot(dmAfter);
+                var beforeIds = new HashSet<string>(before?.ConvertAll(f => f.Id) ?? new List<string>());
+                var consumed = before != null && after != null &&
+                    Array.TrueForAll(request.Args, id => !after.Exists(f => f.Id == id));
+                var gained = after != null && after.Exists(f => !beforeIds.Contains(f.Id));
+                changed = consumed || gained;
+                Journal.Write($"后台合成对账：提交 {request.Args.Length} 条 本笔核实={changed} 鱼 {before?.Count ?? -1}→{after?.Count ?? -1}");
+            }
+            catch (Exception ex) { Journal.Error("合成对账失败", ex); }
+            var warned = ReviewWindow("merge", _preActionWindow);
+            Reply(request, "merge", changed, false, "",
+                (changed ? "合成已确认，鱼群已更新" : "回包成功，但鱼群变化未核实") + (warned == null ? "" : "；" + warned),
+                changed ? "" : "game_state");
+        });
+        _lastActionAt = DateTime.UtcNow;
+        _actions++;
+        Journal.Write($"后台合成已提交：{string.Join(",", request.Args)}");
     }
 
     private static void Upgrade(Request request)

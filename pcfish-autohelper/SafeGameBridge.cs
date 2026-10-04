@@ -146,6 +146,12 @@ internal static class GameBridge
         if (action != null) MainThreadWork.Enqueue(action);
     }
 
+    /// <summary>延迟若干秒后在游戏主线程执行，用于让游戏走完自己的收尾回调。</summary>
+    internal static void RunOnMainThreadAfter(double seconds, Action action)
+    {
+        if (action != null) DelayedMainThreadWork.Enqueue((DateTime.UtcNow.AddSeconds(seconds), action));
+    }
+
     internal static void DrainMainThreadWork()
     {
         for (var i = 0; i < 32 && MainThreadWork.TryDequeue(out var action); i++)

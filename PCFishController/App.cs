@@ -18,6 +18,8 @@ internal sealed class AppSettings
     /// <summary>关闭按钮：ask 每次询问，exit 退出，tray 缩小至托盘。</summary>
     public string CloseBehavior { get; set; } = "ask";
     public bool HideGameConsole { get; set; } = true;
+    /// <summary>仓库总鱼数超过该值时自动合成。</summary>
+    public int AutoMergeThreshold { get; set; } = 900;
 
     /// <summary>自动繁育总开关。</summary>
     public bool AutoBreed { get; set; }

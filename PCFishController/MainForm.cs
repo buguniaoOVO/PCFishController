@@ -15,7 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
-    private const string ExpectedBridgeVersion = "0.23.0";
+    private const string ExpectedBridgeVersion = "0.25.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
@@ -38,6 +38,7 @@ internal sealed partial class MainForm : Form
     private readonly NumericUpDown _numIvMin = new();
     private readonly NumericUpDown _numIvMax = new();
     private readonly NumericUpDown _numMinGrade = new();
+    private readonly NumericUpDown _numMergeThreshold = new();
     private readonly Button _btnOnce = new();
     private readonly Button _btnUpgrade = new();
     private readonly Button _btnState = new();
@@ -68,6 +69,10 @@ internal sealed partial class MainForm : Form
     private DateTime _breedSettleAt = DateTime.MinValue;
     private bool _roundActive;
     private bool _awaitingBreed;
+    private bool _awaitingMerge;
+    private DateTime _mergeRequestedAt = DateTime.MinValue;
+    private DateTime _nextMergeCheckAt = DateTime.MinValue;
+    private List<FishDto> _preMergeSnapshot;
     private readonly BreedRequestTracker _breedRequest = new();
     private DateTime _nextBreedStatusAt = DateTime.MinValue;
     private bool _recoverAfterBreedVerification;
@@ -343,6 +348,11 @@ internal sealed partial class MainForm : Form
         };
 
         _numMinGrade.ValueChanged += (_, _) => _settings.MinGrade = (int)_numMinGrade.Value;
+        _numMergeThreshold.ValueChanged += (_, _) =>
+        {
+            _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
+            _settings.Save();
+        };
 
         _btnOnce.Click += (_, _) =>
         {
@@ -427,6 +437,7 @@ internal sealed partial class MainForm : Form
         _settings.BreedIntervalMinSeconds = (int)_numIvMin.Value * 60;
         _settings.BreedIntervalMaxSeconds = (int)_numIvMax.Value * 60;
         _settings.MinGrade = (int)_numMinGrade.Value;
+        _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
         _settings.Language = UiLanguage.Current;
         _settings.GoalType = _goalTypeCombo?.SelectedValue?.ToString() ?? _settings.GoalType;
         _settings.GoalStar = _goalStarCombo == null ? _settings.GoalStar : Math.Clamp(_goalStarCombo.SelectedIndex + 1, 1, 5);
@@ -602,6 +613,36 @@ internal sealed partial class MainForm : Form
         }
         _log.Write("→ 请求鱼缸升级");
         _client.Send("UPGRADE");
+        _lastActionAt = DateTime.Now;
+    }
+
+    /// <summary>仓库总数超过阈值时自动合成：排除赛季鱼与赛季配方鱼，优先 0 次数的低稀有度鱼。</summary>
+    private void MaybeAutoMerge()
+    {
+        _mergeRequestedAt = DateTime.MinValue;
+        _awaitingMerge = false;
+        if (!_chkAuto.Checked || !_armed || !_bridgeVersionOk || !_bridgeAllowsActions) return;
+        if (_client.Connected == false || _gameBusy || _windowLocked) return;
+        if (_lastFish == null || _lastFish.Count <= _settings.AutoMergeThreshold) return;
+        if (_upgradePending || _awaitingUpgrade || _statePending || _serverAuditPending) return;
+        if (_actionWaitSeconds > 0)
+        {
+            _nextMergeCheckAt = DateTime.Now.AddSeconds(_actionWaitSeconds);
+            return;
+        }
+        var reserved = Selection.SeasonalReservedTypes();
+        var picks = Selection.PickMergeCandidates(_lastFish, 10, reserved);
+        if (picks.Count < 10)
+        {
+            _log.Write($"仓库 {_lastFish.Count} 条，但可用于合成的鱼不足 10 条（已排除赛季鱼与配方鱼），暂不合成。");
+            _nextMergeCheckAt = DateTime.Now.AddSeconds(120);
+            return;
+        }
+        _awaitingMerge = true;
+        _mergeRequestedAt = DateTime.Now;
+        _preMergeSnapshot = _lastFish;
+        _log.Write($"仓库 {_lastFish.Count} 条超过 {_settings.AutoMergeThreshold}，发起自动合成：{string.Join(",", picks.Select(p => p.id))}");
+        _client.Send("MERGE " + string.Join(" ", picks.Select(p => p.id)));
         _lastActionAt = DateTime.Now;
     }
 
@@ -892,6 +933,31 @@ internal sealed partial class MainForm : Form
             return;
         }
 
+        if (msg.cmd == "merge")
+        {
+            _awaitingMerge = false;
+            _preMergeSnapshot = null;
+            if (msg.ok)
+            {
+                _log.Write("✓ 自动合成成功：" + msg.msg + "；刷新鱼群。");
+                _nextMergeCheckAt = DateTime.Now.AddSeconds(3);
+                RequestState();
+            }
+            else
+            {
+                _log.Write("自动合成未完成：" + msg.msg);
+                if (msg.errorKind is "busy" or "not_sent")
+                    _nextMergeCheckAt = DateTime.Now.AddSeconds(60);
+                else
+                {
+                    _actionPauseReason = "自动合成异常，确认游戏状态后点击 ARM 恢复";
+                    _autoResumeAt = DateTime.MinValue;
+                    SendArm(false);
+                }
+            }
+            return;
+        }
+
         if (msg.cmd != "breed" || !_breedRequest.Accept(msg.requestId, msg.terminal && msg.errorKind != "uncertain")) return;
         if (!msg.terminal || msg.errorKind == "uncertain")
         {
@@ -1086,6 +1152,18 @@ internal sealed partial class MainForm : Form
                 SendUpgrade();
             }
         }
+
+        if (_awaitingMerge && (DateTime.Now - _mergeRequestedAt).TotalSeconds > 30)
+        {
+            _awaitingMerge = false;
+            _preMergeSnapshot = null;
+            _log.Write("合成回包超时，保留鱼群等待下一次检查。");
+            _nextMergeCheckAt = DateTime.Now.AddSeconds(60);
+            RequestState();
+        }
+
+        if (!_awaitingMerge && !_roundActive && !_awaitingBreed && !_breedRequest.Active &&
+            DateTime.Now >= _nextMergeCheckAt) MaybeAutoMerge();
 
         if (_roundActive)
         {

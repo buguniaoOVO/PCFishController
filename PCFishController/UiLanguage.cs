@@ -70,6 +70,8 @@ internal static class UiLanguage
         ["检查间隔（分钟，随机）"] = "Check Interval (random minutes)",
         ["至"] = "to",
         ["最低稀有度（0 为不限）"] = "Minimum Rarity (0 = any)",
+        ["自动合成（仓库超过该数量时启用）"] = "Auto Synthesis (enabled above this stock size)",
+        ["排除赛季鱼与赛季配方鱼，优先使用 0 繁育次数和低稀有度的鱼。"] = "Excludes season fish and season recipe fish, and prefers fish with no breed uses left, lowest rarity first.",
         ["每次检查会使用现有繁育计数器，优先选择目标路线、高稀有度且已结束冷却的鱼。"] = "Each check uses available breeding counters and prioritizes goal-route, high-rarity fish whose cooldown has ended.",
         ["手动控制"] = "Manual Controls",
         ["ARM（放行动作）"] = "ARM (Allow Actions)",
