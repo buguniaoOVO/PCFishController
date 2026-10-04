@@ -20,7 +20,7 @@ public class Plugin : BasePlugin
 {
     public const string PluginGuid = "pcfish.autohelper";
     public const string PluginName = "PC FISH Auto Helper (Bridge)";
-public const string PluginVersion = "0.29.0";
+public const string PluginVersion = "0.30.0";
 
     internal static ManualLogSource Logger;
     internal static Plugin Instance;

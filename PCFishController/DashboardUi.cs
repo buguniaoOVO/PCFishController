@@ -1,3 +1,5 @@
+using System.Drawing.Drawing2D;
+
 namespace PCFishController;
 
 internal sealed partial class MainForm
@@ -20,7 +22,7 @@ internal sealed partial class MainForm
     private static readonly Color CraftableText = Color.FromArgb(8, 123, 58);
     private static readonly Color CraftableFill = Color.FromArgb(211, 245, 224);
 
-    private readonly Dictionary<string, Button> _navButtons = new();
+    private readonly Dictionary<string, NavButton> _navButtons = new();
     private readonly Dictionary<string, Panel> _pages = new();
     private string _activePage = "overview";
     private readonly Label _lblPageTitle = new();
@@ -59,6 +61,8 @@ internal sealed partial class MainForm
     private readonly DataGridView _synthesisGrid = new();
     private readonly ComboBox _languageCombo = new();
     private readonly ComboBox _closeBehaviorCombo = new();
+    private readonly TextBox _commandBox = new();
+    private readonly Label _commandStatus = new();
 
     /// <summary>界面右下角显示的版本号，取自程序集，改版本只需改 csproj。</summary>
     private static string AppVersion
@@ -158,13 +162,13 @@ internal sealed partial class MainForm
         sidebar.Controls.Add(brand);
 
         var menu = new Panel { Dock = DockStyle.Top, Height = 380, Padding = new Padding(12, 8, 12, 0) };
-        AddNav(menu, "overview", "◇   概览", 0);
-        AddNav(menu, "breeding", "♥   自动繁育", 50);
-        AddNav(menu, "merge", "▣   自动合成", 100);
-        AddNav(menu, "warehouse", "▤   仓库", 150);
-        AddNav(menu, "synthesis", "◇   合成路线", 200);
-        AddNav(menu, "logs", "≡   日志", 250);
-        AddNav(menu, "settings", "⚙   设置", 300);
+        AddNav(menu, "overview", "概览", 0);
+        AddNav(menu, "breeding", "自动繁育", 50);
+        AddNav(menu, "merge", "自动合成", 100);
+        AddNav(menu, "warehouse", "仓库", 150);
+        AddNav(menu, "synthesis", "合成路线", 200);
+        AddNav(menu, "logs", "日志", 250);
+        AddNav(menu, "settings", "设置", 300);
         sidebar.Controls.Add(menu);
         sidebar.Controls.SetChildIndex(menu, 0);
         var foot = Label("本地连接  ·  后台运行", 8, false, Muted);
@@ -251,20 +255,119 @@ internal sealed partial class MainForm
         ResumeLayout(true);
     }
 
+    /// <summary>
+    /// 侧边栏按钮：文字左边画一个像素小图标。
+    /// 图标不参与文本布局，所以切换语言时文字变了图标也留在原地。
+    /// </summary>
+    private sealed class NavButton : Button
+    {
+        internal string Key { get; init; } = "";
+        private Image _icon;
+
+        internal void SetIcon(Image icon)
+        {
+            _icon?.Dispose();
+            _icon = icon;
+            Invalidate();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (_icon == null) return;
+            e.Graphics.SmoothingMode = SmoothingMode.None;
+            e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            e.Graphics.DrawImage(_icon, 14, (Height - _icon.Height) / 2, _icon.Width, _icon.Height);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _icon?.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
     private void AddNav(Panel menu, string key, string caption, int y)
     {
-        var button = new Button
+        var button = new NavButton
         {
             Text = UiLanguage.T(caption), FlatStyle = FlatStyle.Flat,
-            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(14, 0, 0, 0),
+            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(44, 0, 0, 0),
             BackColor = Side, ForeColor = Muted, Cursor = Cursors.Hand,
             Height = 42, Width = 164, Location = new Point(12, y + 8),
-            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top
+            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
+            Key = key
         };
         button.FlatAppearance.BorderSize = 0;
         button.Click += (_, _) => ShowPage(key);
+        button.SetIcon(NavIcon(key, Muted));
         _navButtons[key] = button;
         menu.Controls.Add(button);
+    }
+
+    /// <summary>
+    /// 侧边栏图标：按页面含义画一个像素风小图标，和游戏统一。
+    /// 尺寸固定 20x20，坐标落在 2 像素的格子上，得到方块边缘的观感。
+    /// </summary>
+    private static Bitmap NavIcon(string key, Color color)
+    {
+        const int grid = 2;
+        const int size = 20;
+        var bmp = new Bitmap(size, size);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = SmoothingMode.None;
+        g.InterpolationMode = InterpolationMode.NearestNeighbor;
+        g.PixelOffsetMode = PixelOffsetMode.Half;
+        using var brush = new SolidBrush(color);
+        using var pen = new Pen(color, grid) { StartCap = LineCap.Square, EndCap = LineCap.Square };
+        void Block(int x, int y, int w = grid, int h = grid) => g.FillRectangle(brush, x, y, w, h);
+        void Dot(int x, int y) => g.FillRectangle(brush, x, y, grid, grid);
+
+        switch (key)
+        {
+            case "overview":
+                // 方框加中间一颗点：概览像一块仪表盘
+                Block(2, 2, 16, 2); Block(2, 16, 16, 2);
+                Block(2, 4, 2, 12); Block(16, 4, 2, 12);
+                Block(8, 8, 4, 4);
+                break;
+            case "breeding":
+                // 像素爱心
+                Block(4, 4, 4, 4); Block(12, 4, 4, 4);
+                Block(2, 6, 16, 4);
+                Block(4, 10, 12, 2);
+                Block(6, 12, 8, 2);
+                Block(8, 14, 4, 2);
+                break;
+            case "merge":
+                // 两格并成一格：合成
+                Block(2, 4, 6, 6); Block(12, 4, 6, 6);
+                Block(2, 14, 16, 2);
+                Block(9, 6, 2, 6);
+                break;
+            case "warehouse":
+                // 箱子：外框加中线
+                Block(2, 2, 16, 2); Block(2, 16, 16, 2);
+                Block(2, 4, 2, 12); Block(16, 4, 2, 12);
+                Block(2, 9, 16, 2);
+                break;
+            case "synthesis":
+                // 配方：三个材料点加结果点
+                Dot(3, 3); Dot(3, 11); Dot(11, 11);
+                Block(14, 3, 4, 4);
+                break;
+            case "logs":
+                // 三条横线，长短不一
+                Block(2, 4, 16, 2); Block(2, 9, 12, 2); Block(2, 14, 16, 2);
+                break;
+            case "settings":
+            default:
+                // 齿轮：方芯加四向齿
+                Block(7, 7, 6, 6);
+                Dot(9, 2); Dot(9, 16); Dot(2, 9); Dot(16, 9);
+                break;
+        }
+        return bmp;
     }
 
     private void ShowPage(string key)
@@ -273,8 +376,10 @@ internal sealed partial class MainForm
         foreach (var (name, page) in _pages) page.Visible = name == key;
         foreach (var (name, button) in _navButtons)
         {
-            button.BackColor = name == key ? Color.FromArgb(230, 238, 252) : Side;
-            button.ForeColor = name == key ? Color.FromArgb(38, 78, 153) : Muted;
+            var active = name == key;
+            button.BackColor = active ? Color.FromArgb(230, 238, 252) : Side;
+            button.ForeColor = active ? Color.FromArgb(38, 78, 153) : Muted;
+            button.SetIcon(NavIcon(name, button.ForeColor));
         }
         var heading = key switch
         {
@@ -284,7 +389,7 @@ internal sealed partial class MainForm
             "synthesis" => ("合成路线", "根据 Wiki 配方查看材料状态并设置繁育目标"),
             "collection" => ("图鉴 / 目标", "查看已发现鱼种，设置最终目标和繁育路线"),
             "logs" => ("日志", "查看助手和游戏桥接的运行记录"),
-            "settings" => ("设置", "管理助手语言和窗口行为"),
+            "settings" => ("设置", "管理助手语言、窗口行为和命令"),
             _ => ("概览", "游戏连接、鱼群和繁育状态")
         };
         _lblPageTitle.Text = UiLanguage.T(heading.Item1);
@@ -541,7 +646,7 @@ internal sealed partial class MainForm
 
         var settings = Surface();
         settings.Dock = DockStyle.Top;
-        settings.Height = 250;
+        settings.Height = 232;
         var heading = Label("自动运行", 12, true);
         heading.SetBounds(20, 15, 300, 32);
         _chkMerge.SetBounds(22, 58, 170, 36);
@@ -572,14 +677,12 @@ internal sealed partial class MainForm
         StyleNumber(_numMergeSafety);
 
         var ruleHint = Label("每次合并 10 条；优先使用 0 繁育次数、稀有度最低的鱼。", 9, false, Muted);
-        ruleHint.SetBounds(22, 185, 700, 24);
-        var flowHint = Label("流程：打开功能窗口 → 切到合成标签 → 逐条点「+」放鱼 → 点「合成」→ 等动画并关掉结果弹窗。", 9, false, Muted);
-        flowHint.SetBounds(22, 211, 860, 24);
+        ruleHint.SetBounds(22, 192, 700, 24);
 
         settings.Controls.AddRange(new Control[]
         {
             heading, _chkMerge, _chkMergeExcludeSeasonal, thresholdTitle, _numMergeThreshold,
-            safetyTitle, _numMergeSafety, ruleHint, flowHint
+            safetyTitle, _numMergeSafety, ruleHint
         });
 
         var manual = Surface();
@@ -1430,7 +1533,7 @@ internal sealed partial class MainForm
 
         var card = Surface();
         card.Dock = DockStyle.Top;
-        card.Height = 260;
+        card.Height = 340;
         var title = Label("设置", 13, true);
         title.SetBounds(20, 16, 240, 34);
         var languageLabel = Label("界面语言", 10, true, Muted);
@@ -1461,7 +1564,32 @@ internal sealed partial class MainForm
         };
         var closeNote = Label("点击右上角 X 时按此设置执行，选择后自动保存。托盘模式下助手继续运行。", 9, false, Muted);
         closeNote.SetBounds(138, 191, 640, 46);
-        card.Controls.AddRange(new Control[] { title, languageLabel, _languageCombo, languageNote, closeTitle, _closeBehaviorCombo, closeNote });
+        var commandTitle = Label("命令", 10, true, Muted);
+        commandTitle.SetBounds(22, 246, 110, 28);
+        _commandBox.SetBounds(138, 244, 340, 32);
+        _commandBox.BackColor = InputBg;
+        _commandBox.ForeColor = White;
+        _commandBox.BorderStyle = BorderStyle.FixedSingle;
+        _commandBox.PlaceholderText = "输入 /setting 打开设置命令";
+        _commandBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.SuppressKeyPress = true;
+            RunCommand(_commandBox.Text);
+        };
+        var commandRun = ActionButton("执行");
+        commandRun.SetBounds(490, 243, 84, 34);
+        commandRun.Click += (_, _) => RunCommand(_commandBox.Text);
+        _commandStatus.SetBounds(586, 244, 300, 30);
+        _commandStatus.ForeColor = Muted;
+        _commandStatus.Font = new Font("Microsoft YaHei UI", 9F);
+        var commandNote = Label("输入 /setting 或 /设置，直接跳到本页的设置项；输入 /help 查看可用命令。", 9, false, Muted);
+        commandNote.SetBounds(138, 282, 700, 40);
+        card.Controls.AddRange(new Control[]
+        {
+            title, languageLabel, _languageCombo, languageNote, closeTitle, _closeBehaviorCombo, closeNote,
+            commandTitle, _commandBox, commandRun, _commandStatus, commandNote
+        });
         // Dock.Top 的排列顺序是后添加的在上，所以先加语言卡、后加部署卡，一键部署才会在页面顶部。
         page.Controls.Add(card);
         page.Controls.Add(deploy);
@@ -1478,6 +1606,44 @@ internal sealed partial class MainForm
             if (_changingLanguage || _languageCombo.SelectedIndex < 0) return;
             ChangeLanguage(_languageCombo.SelectedIndex == 1 ? "en" : "zh");
         };
+    }
+
+    /// <summary>
+    /// 设置页的命令行。目前支持 /setting（打开设置）和 /help。
+    /// 命令识别大小写不敏感，也接受中文写法。
+    /// </summary>
+    private void RunCommand(string raw)
+    {
+        var text = (raw ?? "").Trim();
+        if (text.Length == 0)
+        {
+            _commandStatus.ForeColor = Muted;
+            _commandStatus.Text = UiLanguage.T("请输入命令，例如 /setting");
+            return;
+        }
+
+        var name = text.Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)[0].ToLowerInvariant();
+        switch (name)
+        {
+            case "/setting":
+            case "/settings":
+            case "/设置":
+                ShowPage("settings");
+                _commandStatus.ForeColor = Green;
+                _commandStatus.Text = UiLanguage.T("已打开设置");
+                _log.Write("命令 /setting：已打开设置页面。");
+                break;
+            case "/help":
+            case "/?":
+            case "/帮助":
+                _commandStatus.ForeColor = Muted;
+                _commandStatus.Text = UiLanguage.T("/setting 打开设置　/help 查看命令");
+                break;
+            default:
+                _commandStatus.ForeColor = Color.FromArgb(184, 71, 100);
+                _commandStatus.Text = UiLanguage.T("未知命令：") + name;
+                break;
+        }
     }
 
     /// <summary>检查 GitHub 上的最新发布。只查询，不下载。</summary>
