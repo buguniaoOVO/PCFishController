@@ -8,7 +8,7 @@
     <Nullable>disable</Nullable>
     <AssemblyName>PCFishController</AssemblyName>
     <RootNamespace>PCFishController</RootNamespace>
-<Version>0.34.0</Version>
+<Version>0.35.0</Version>
     <ApplicationIcon>pcfish-terry.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>

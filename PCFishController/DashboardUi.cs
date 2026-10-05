@@ -36,7 +36,9 @@ internal sealed partial class MainForm
     private readonly Label _lblOverviewHeart = new();
     private readonly Label _lblOverviewLevel = new();
     private readonly Label _lblWarehouseCount = new();
-    private readonly DataGridView _warehouse = new();
+    /// <summary>仓库改成卡片网格：每张卡照着游戏里的样式画图和品质。</summary>
+    private readonly FlowLayoutPanel _warehouseGrid = new();
+    private readonly List<WarehouseCard> _warehouseCards = new();
     private readonly TextBox _warehouseSearch = new();
     private readonly ComboBox _warehouseFilter = new();
     private readonly ComboBox _warehouseSort = new();
@@ -45,8 +47,6 @@ internal sealed partial class MainForm
     private Button _btnMarket;
     private readonly Label _lblMarketStatus = new();
     private bool _marketBusy;
-    private string _warehouseSortColumn = "grade";
-    private bool _warehouseSortDescending = true;
     private readonly ComboBox _goalTypeCombo = new();
     private readonly ComboBox _goalUnlockFilter = new();
     private readonly ComboBox _goalStarCombo = new();
@@ -761,7 +761,7 @@ internal sealed partial class MainForm
         _warehouseFilter.Items.AddRange(new object[] { "全部", "可繁育", "冷却中", "次数用尽", "锁定/展示" });
         _warehouseFilter.SelectedIndex = 0;
         _warehouseSort.SetBounds(379, 51, 150, 32);
-        _warehouseSort.Items.AddRange(new object[] { "稀有度优先", "星级优先", "次数优先", "冷却最快" });
+        _warehouseSort.Items.AddRange(new object[] { "稀有度优先", "星级优先", "次数优先", "冷却最快", "价格降序", "价格升序" });
         _warehouseSort.SelectedIndex = 0;
         foreach (var combo in new[] { _warehouseFilter, _warehouseSort })
         {
@@ -786,8 +786,6 @@ internal sealed partial class MainForm
         _warehouseFilter.SelectedIndexChanged += (_, _) => RefreshWarehouse();
         _warehouseSort.SelectedIndexChanged += (_, _) =>
         {
-            _warehouseSortColumn = null;
-            _warehouseSortDescending = true;
             RefreshWarehouse();
         };
         toolbar.Controls.AddRange(new Control[]
@@ -796,96 +794,15 @@ internal sealed partial class MainForm
             _warehouseSort, refresh, _btnMarket
         });
 
-        _warehouse.Dock = DockStyle.Fill;
-        _warehouse.BackgroundColor = Card;
-        _warehouse.BorderStyle = BorderStyle.None;
-        _warehouse.GridColor = Line;
-        _warehouse.EnableHeadersVisualStyles = false;
-        _warehouse.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(232, 238, 247);
-        _warehouse.ColumnHeadersDefaultCellStyle.ForeColor = White;
-        _warehouse.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
-        _warehouse.ColumnHeadersHeight = 43;
-        // 行留得下 32 像素的鱼图。
-        _warehouse.RowTemplate.Height = 40;
-        _warehouse.DefaultCellStyle.BackColor = Card;
-        _warehouse.DefaultCellStyle.ForeColor = White;
-        _warehouse.DefaultCellStyle.SelectionBackColor = Color.FromArgb(219, 231, 251);
-        _warehouse.DefaultCellStyle.SelectionForeColor = White;
-        _warehouse.AlternatingRowsDefaultCellStyle.BackColor = Color.FromArgb(248, 250, 253);
-        _warehouse.RowHeadersVisible = false;
-        _warehouse.ReadOnly = true;
-        _warehouse.AllowUserToAddRows = false;
-        _warehouse.AllowUserToDeleteRows = false;
-        _warehouse.AllowUserToResizeRows = false;
-        _warehouse.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
-        _warehouse.MultiSelect = false;
-        _warehouse.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
-        _warehouse.Columns.Add("fish", "鱼种");
-        _warehouse.Columns.Add("grade", "稀有度");
-        _warehouse.Columns.Add("stars", "星级");
-        _warehouse.Columns.Add("breed", "剩余繁育");
-        _warehouse.Columns.Add("cooldown", "冷却 CD");
-        _warehouse.Columns.Add("status", "状态");
-        _warehouse.Columns.Add("level", "等级");
-        _warehouse.Columns.Add("price", "Steam 最低价");
-        _warehouse.Columns.Add("id", "鱼 ID");
-        foreach (DataGridViewColumn col in _warehouse.Columns) col.SortMode = DataGridViewColumnSortMode.Programmatic;
-        _warehouse.ColumnHeaderMouseClick += (_, e) =>
-        {
-            if (e.ColumnIndex < 0 || e.ColumnIndex >= _warehouse.Columns.Count) return;
-            var column = _warehouse.Columns[e.ColumnIndex].Name;
-            if (string.Equals(_warehouseSortColumn, column, StringComparison.OrdinalIgnoreCase))
-                _warehouseSortDescending = !_warehouseSortDescending;
-            else
-            {
-                _warehouseSortColumn = column;
-                _warehouseSortDescending = true;
-            }
-            UpdateWarehouseSortHeaders();
-            RefreshWarehouse();
-        };
-        UpdateWarehouseSortHeaders();
-        _warehouse.Columns["fish"].FillWeight = 150;
-        // 有鱼图时给左侧留出 32 像素，图由 CellPainting 画在这一块里。
-        if (FishIconPack.Available) _warehouse.Columns["fish"].DefaultCellStyle.Padding = new Padding(38, 0, 0, 0);
-        _warehouse.Columns["grade"].FillWeight = 85;
-        _warehouse.Columns["stars"].FillWeight = 95;
-        _warehouse.Columns["breed"].FillWeight = 85;
-        _warehouse.Columns["cooldown"].FillWeight = 95;
-        _warehouse.Columns["status"].FillWeight = 95;
-        _warehouse.Columns["level"].FillWeight = 60;
-        _warehouse.Columns["price"].FillWeight = 100;
-        _warehouse.Columns["id"].FillWeight = 105;
-        // 鱼种列左边画一条游戏里的鱼图；图集缺失时这一段自动不生效。
-        _warehouse.CellPainting += (_, e) =>
-        {
-            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
-            if (_warehouse.Columns[e.ColumnIndex].Name != "fish") return;
-            if (_warehouse.Rows[e.RowIndex].Tag is not FishDto fish) return;
-            var icon = FishIcon(fish);
-            if (icon == null) return;
-            e.PaintBackground(e.CellBounds, true);
-            e.PaintContent(e.CellBounds);
-            e.Graphics.DrawImage(icon, e.CellBounds.Left + 4,
-                e.CellBounds.Top + (e.CellBounds.Height - icon.Height) / 2, icon.Width, icon.Height);
-            e.Handled = true;
-        };
-        _warehouse.CellToolTipTextNeeded += (_, e) =>
-        {
-            if (e.RowIndex >= 0 && e.RowIndex < _warehouse.Rows.Count && _warehouse.Rows[e.RowIndex].Tag is FishDto f)
-            {
-                var tip = $"{f.sp}\nID: {f.id}\n下次繁育: {f.nx}";
-                var quote = MarketQuoteFor(f);
-                if (quote != null)
-                    tip += $"\nSteam 市场：{quote.HashName}\n最低在售 {quote.PriceText}　在售 {quote.Listed} 件";
-                e.ToolTipText = tip;
-            }
-        };
-        var tableCard = Surface();
-        tableCard.Dock = DockStyle.Fill;
-        tableCard.Padding = new Padding(0);
-        tableCard.Controls.Add(_warehouse);
-        page.Controls.Add(tableCard);
+        // 卡片网格：自动换行，滚动条在右边。
+        _warehouseGrid.Dock = DockStyle.Fill;
+        _warehouseGrid.BackColor = Bg;
+        _warehouseGrid.AutoScroll = true;
+        _warehouseGrid.FlowDirection = FlowDirection.LeftToRight;
+        _warehouseGrid.WrapContents = true;
+        _warehouseGrid.Padding = new Padding(6, 6, 6, 6);
+        _warehouseGrid.Resize += (_, _) => LayoutWarehouseCards();
+        page.Controls.Add(_warehouseGrid);
         page.Controls.Add(toolbar);
     }
 
@@ -1969,6 +1886,185 @@ internal sealed partial class MainForm
         _lblOverviewLevel.Text = _tankLevel < 0 ? "—" : $"Lv {_tankLevel}";
     }
 
+    /// <summary>
+    /// 鱼图控件。按整数倍放大并用最近邻绘制，保住像素画的方块边缘；
+    /// 放得下就放大 2 倍，装不下就原尺寸居中。
+    /// </summary>
+    private sealed class FishIconBox : Control
+    {
+        private Image _source;
+
+        internal Image Source
+        {
+            get => _source;
+            set { _source = value; Invalidate(); }
+        }
+
+        internal FishIconBox()
+        {
+            DoubleBuffered = true;
+            // 自绘控件默认不支持透明背景，这里显式打开，卡片底色才能透出来。
+            SetStyle(ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint |
+                     ControlStyles.UserPaint, true);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (_source == null) return;
+            e.Graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
+            e.Graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+            // 只做整数倍缩放：先试 2 倍，装不下就退回原尺寸。
+            var scale = 1;
+            while ((_source.Width * (scale + 1) <= Width - 8) && (_source.Height * (scale + 1) <= Height - 4))
+                scale++;
+            var w = _source.Width * scale;
+            var h = _source.Height * scale;
+            e.Graphics.DrawImage(_source, (Width - w) / 2, (Height - h) / 2, w, h);
+        }
+    }
+
+    /// <summary>
+    /// 仓库里的一张鱼卡。照着游戏里的样式排版：
+    ///   最上面：Steam 最低价（没查价时不显示）
+    ///   第二行：几分之几的繁育次数
+    ///   中间：鱼图
+    ///   下面：品质（用游戏里的品质色）
+    ///   再下面：星级
+    ///   最底下：鱼名
+    /// 卡片整体用品质色描边，和游戏里一格一格的观感一致。
+    /// </summary>
+    private sealed class WarehouseCard : Panel
+    {
+        internal const int CardWidth = 108;
+        internal const int CardHeight = 158;
+        internal const int CardGap = 10;
+
+        private readonly FishDto _fish;
+        private readonly Label _price;
+        private readonly Label _breed;
+        private readonly FishIconBox _icon;
+        private readonly Label _grade;
+        private readonly Label _stars;
+        private readonly Label _name;
+        private readonly ToolTip _tip;
+        private bool _hover;
+
+        internal WarehouseCard(FishDto fish, Image icon, MarketQuote quote, string priceText)
+        {
+            _fish = fish;
+            Width = CardWidth;
+            Height = CardHeight;
+            Margin = new Padding(0, 0, CardGap, CardGap);
+            BackColor = FishQualityPalette.Background;
+            DoubleBuffered = true;
+
+            var quality = FishQualityPalette.ForTier(fish.RarityTier);
+
+            _price = new Label
+            {
+                Dock = DockStyle.Top, Height = 20, TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = quote != null ? CraftableText : Muted,
+                BackColor = Color.Transparent,
+                Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold),
+                Text = quote != null ? priceText : ""
+            };
+            _breed = new Label
+            {
+                Dock = DockStyle.Top, Height = 18, TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Color.FromArgb(226, 234, 244), BackColor = Color.Transparent,
+                Font = new Font("Microsoft YaHei UI", 8F),
+                Text = $"{fish.bc}/{fish.bm}"
+            };
+            _icon = new FishIconBox
+            {
+                Dock = DockStyle.Top, Height = 58, BackColor = Color.Transparent, Source = icon
+            };
+            _grade = new Label
+            {
+                Dock = DockStyle.Top, Height = 18, TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = quality, BackColor = Color.Transparent,
+                Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold),
+                Text = GradeName(fish.RarityTier)
+            };
+            _stars = new Label
+            {
+                Dock = DockStyle.Top, Height = 16, TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Gold, BackColor = Color.Transparent,
+                Font = new Font("Microsoft YaHei UI", 7.5F),
+                Text = fish.Stars is >= 1 and <= 5 ? new string('★', fish.Stars) : ""
+            };
+            _name = new Label
+            {
+                Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+                ForeColor = Color.FromArgb(214, 224, 236), BackColor = Color.Transparent,
+                Font = new Font("Microsoft YaHei UI", 7.5F),
+                Text = fish.Name ?? "",
+                AutoEllipsis = true
+            };
+
+            // Dock.Top 是后加的在上，所以要倒着加，最终顺序才是 价格→次数→图→品质→星级→名称。
+            Controls.Add(_name);
+            Controls.Add(_stars);
+            Controls.Add(_grade);
+            Controls.Add(_icon);
+            Controls.Add(_breed);
+            Controls.Add(_price);
+
+            _tip = new ToolTip();
+            _tip.SetToolTip(this, BuildTip(fish, quote));
+            foreach (Control child in Controls) _tip.SetToolTip(child, BuildTip(fish, quote));
+        }
+
+        private static string BuildTip(FishDto fish, MarketQuote quote)
+        {
+            var tip = $"{fish.Name}  ({fish.variant:00})\n{fish.sp}\n" +
+                      $"{UiLanguage.T("剩余繁育")}：{fish.bc} / {fish.bm}\n" +
+                      $"{UiLanguage.T("冷却 CD")}：{UiLanguage.T(CooldownText(fish))}\n" +
+                      $"{UiLanguage.T("状态")}：{UiLanguage.T(FishStatus(fish))}";
+            // ID 从列表里拿掉了，放在悬停提示里，需要时还能查到。
+            if (!string.IsNullOrWhiteSpace(fish.id)) tip += $"\nID: {fish.id}";
+            if (fish.serverBc >= 0)
+                tip += UiLanguage.IsEnglish
+                    ? $"\nIn-game cache: {fish.bc}; server: {fish.serverBc}"
+                    : $"\n游戏本地缓存剩余次数：{fish.bc}；服务器剩余次数：{fish.serverBc}";
+            if (quote != null)
+                tip += $"\nSteam：{quote.HashName}\n最低在售 {quote.PriceText}　在售 {quote.Listed} 件";
+            return tip;
+        }
+
+        /// <summary>只刷会随时间变的两个字段，图片和价格不动。</summary>
+        internal void RefreshLive()
+        {
+            _breed.Text = $"{_fish.bc}/{_fish.bm}";
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            _hover = true;
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            _hover = false;
+            Invalidate();
+        }
+
+        /// <summary>按品质色描边，和游戏里的格子一致。</summary>
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            var quality = FishQualityPalette.ForTier(_fish.RarityTier);
+            using var pen = new Pen(_hover ? Color.White : quality, _hover ? 2F : 1.4F);
+            e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        }
+    }
+
     /// <summary>仓库某条鱼的图标，按 sp 缓存。取不到返回 null。</summary>
     private Image FishIcon(FishDto fish)
     {
@@ -2047,11 +2143,6 @@ internal sealed partial class MainForm
 
     private void RefreshWarehouse()
     {
-        if (_warehouse.Columns.Count == 0) return;
-        var selectedId = _warehouse.SelectedRows.Count > 0
-            ? (_warehouse.SelectedRows[0].Tag as FishDto)?.id : null;
-        var scroll = -1;
-        try { scroll = _warehouse.FirstDisplayedScrollingRowIndex; } catch { }
         var source = _lastFish ?? new List<FishDto>();
         IEnumerable<FishDto> query = source;
         var search = _warehouseSearch.Text.Trim();
@@ -2070,99 +2161,61 @@ internal sealed partial class MainForm
         };
         query = ApplyWarehouseSort(query);
         var shown = query.ToList();
-        _warehouse.SuspendLayout();
-        _warehouse.Rows.Clear();
+
+        // 只重建卡片。卡数量多时先 SuspendLayout，避免每加一张都重排一次。
+        _warehouseGrid.SuspendLayout();
+        foreach (var card in _warehouseCards) card.Dispose();
+        _warehouseCards.Clear();
         foreach (var f in shown)
         {
-            var index = _warehouse.Rows.Add(
-                $"{f.Name}  ({f.variant:00})", GradeName(f.RarityTier), StarText(f.Stars),
-                $"{f.bc} / {f.bm}", UiLanguage.T(CooldownText(f)), UiLanguage.T(FishStatus(f)), $"T{f.RarityTier}",
-                MarketPriceText(f),
-                f.id == null ? "—" : f.id.Length > 8 ? f.id[..8] : f.id);
-            var row = _warehouse.Rows[index];
-            row.Tag = f;
-            SetQualityCell(row.Cells["fish"], f.RarityTier);
-            SetQualityCell(row.Cells["grade"], f.RarityTier);
-            row.Cells["stars"].Style.ForeColor = Gold;
-            row.Cells["price"].Style.ForeColor = MarketPriceColor(f);
-            row.Cells["status"].Style.ForeColor = StatusColor(f);
-            if (f.serverBc >= 0)
-                row.Cells["breed"].ToolTipText = UiLanguage.IsEnglish
-                    ? $"In-game cache: {f.bc}; server: {f.serverBc}"
-                    : $"游戏本地缓存剩余次数：{f.bc}；服务器剩余次数：{f.serverBc}";
+            var card = new WarehouseCard(f,
+                FishIcon(f), MarketQuoteFor(f), MarketPriceText(f));
+            _warehouseCards.Add(card);
+            _warehouseGrid.Controls.Add(card);
         }
-        _warehouse.ClearSelection();
-        if (selectedId != null)
-        {
-            foreach (DataGridViewRow row in _warehouse.Rows)
-                if ((row.Tag as FishDto)?.id == selectedId) { row.Selected = true; break; }
-        }
-        try
-        {
-            if (scroll >= 0 && _warehouse.Rows.Count > 0)
-                _warehouse.FirstDisplayedScrollingRowIndex = Math.Min(scroll, _warehouse.Rows.Count - 1);
-        }
-        catch { }
-        _warehouse.ResumeLayout();
+        _warehouseGrid.ResumeLayout();
+        LayoutWarehouseCards();
+
         _lblWarehouseCount.Text = UiLanguage.T(_lastFish == null ? "等待游戏数据…" : $"显示 {shown.Count} / {source.Count} 条");
         UpdateDashboardSummary();
+    }
+
+    /// <summary>
+    /// 按容器宽度算每行能放几张卡，把卡片宽度撑满一行。
+    /// 卡片是固定宽度的，这里只调宽度，避免右边留一条空白。
+    /// </summary>
+    private void LayoutWarehouseCards()
+    {
+        if (_warehouseCards.Count == 0) return;
+        var usable = _warehouseGrid.ClientSize.Width - _warehouseGrid.Padding.Horizontal - 18;
+        if (usable <= 0) return;
+        var pitch = WarehouseCard.CardWidth + WarehouseCard.CardGap;
+        var perRow = Math.Max(1, (usable + WarehouseCard.CardGap) / pitch);
+        var width = (usable - perRow * WarehouseCard.CardGap) / perRow;
+        width = Math.Clamp(width, WarehouseCard.CardWidth, WarehouseCard.CardWidth + 60);
+        foreach (var card in _warehouseCards) card.Width = width;
     }
 
     private void UpdateWarehouseCountdowns()
     {
         if (_activePage != "warehouse" || (DateTime.Now - _warehouseCdUpdateAt).TotalSeconds < 1) return;
         _warehouseCdUpdateAt = DateTime.Now;
-        foreach (DataGridViewRow row in _warehouse.Rows)
-        {
-            if (row.Tag is not FishDto f) continue;
-            row.Cells["cooldown"].Value = UiLanguage.T(CooldownText(f));
-            row.Cells["status"].Value = UiLanguage.T(FishStatus(f));
-            row.Cells["status"].Style.ForeColor = StatusColor(f);
-        }
+        // 卡片上的冷却和状态每秒刷一次；图片和价格不动。
+        foreach (var card in _warehouseCards) card.RefreshLive();
     }
 
+    /// <summary>排序。表格没了以后就以「排序」下拉为准，不再有列头点击。</summary>
     private IEnumerable<FishDto> ApplyWarehouseSort(IEnumerable<FishDto> source)
     {
-        var column = _warehouseSortColumn;
-        if (string.IsNullOrWhiteSpace(column))
+        return _warehouseSort.SelectedIndex switch
         {
-            column = _warehouseSort.SelectedIndex switch
-            {
-                1 => "stars",
-                2 => "breed",
-                3 => "cooldown",
-                _ => "grade"
-            };
-        }
-        var descending = _warehouseSortColumn == null || _warehouseSortDescending;
-        return column switch
-        {
-            "fish" => descending ? source.OrderByDescending(f => f.Name).ThenBy(f => f.sp) : source.OrderBy(f => f.Name).ThenBy(f => f.sp),
-            "grade" => descending ? source.OrderByDescending(f => f.RarityTier).ThenByDescending(f => f.Stars).ThenBy(f => f.sp) : source.OrderBy(f => f.RarityTier).ThenBy(f => f.Stars).ThenBy(f => f.sp),
-            "stars" => descending ? source.OrderByDescending(f => f.Stars).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp) : source.OrderBy(f => f.Stars).ThenBy(f => f.RarityTier).ThenBy(f => f.sp),
-            "breed" => descending ? source.OrderByDescending(f => f.bc).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp) : source.OrderBy(f => f.bc).ThenBy(f => f.RarityTier).ThenBy(f => f.sp),
-            "cooldown" => descending ? source.OrderByDescending(f => Selection.CooldownRemaining(f) ?? TimeSpan.MaxValue).ThenBy(f => f.sp) : source.OrderBy(f => Selection.CooldownRemaining(f) ?? TimeSpan.MaxValue).ThenBy(f => f.sp),
-            "status" => descending ? source.OrderByDescending(f => FishStatus(f)).ThenBy(f => f.sp) : source.OrderBy(f => FishStatus(f)).ThenBy(f => f.sp),
-            "level" => descending ? source.OrderByDescending(f => f.lv).ThenBy(f => f.sp) : source.OrderBy(f => f.lv).ThenBy(f => f.sp),
-            "id" => descending ? source.OrderByDescending(f => f.id).ThenBy(f => f.sp) : source.OrderBy(f => f.id).ThenBy(f => f.sp),
+            1 => source.OrderByDescending(f => f.Stars).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp),
+            2 => source.OrderByDescending(f => f.bc).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp),
+            3 => source.OrderBy(f => Selection.CooldownRemaining(f) ?? TimeSpan.MaxValue).ThenBy(f => f.sp),
+            4 => source.OrderByDescending(f => MarketQuoteFor(f)?.Lowest ?? 0m).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp),
+            5 => source.OrderBy(f => MarketQuoteFor(f)?.Lowest ?? decimal.MaxValue).ThenBy(f => f.sp),
             _ => source.OrderByDescending(f => f.RarityTier).ThenByDescending(f => f.Stars).ThenBy(f => f.sp)
         };
-    }
-
-    private void UpdateWarehouseSortHeaders()
-    {
-        var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["fish"] = "鱼种", ["grade"] = "稀有度", ["stars"] = "星级", ["breed"] = "剩余繁育",
-            ["cooldown"] = "冷却 CD", ["status"] = "状态", ["level"] = "等级", ["id"] = "鱼 ID"
-        };
-        foreach (DataGridViewColumn column in _warehouse.Columns)
-        {
-            if (!labels.TryGetValue(column.Name, out var label)) continue;
-            column.HeaderText = string.Equals(_warehouseSortColumn, column.Name, StringComparison.OrdinalIgnoreCase)
-                ? label + (_warehouseSortDescending ? " ▼" : " ▲")
-                : label;
-        }
     }
 
     private static string GradeName(int grade) => UiLanguage.T(grade switch

@@ -143,6 +143,8 @@ internal static class UiLanguage
         ["星级优先"] = "Stars First",
         ["次数优先"] = "Uses First",
         ["冷却最快"] = "Soonest Cooldown",
+        ["价格降序"] = "Price High to Low",
+        ["价格升序"] = "Price Low to High",
         ["刷新仓库"] = "Refresh Warehouse",
         ["鱼种"] = "Species",
         ["稀有度"] = "Rarity",
