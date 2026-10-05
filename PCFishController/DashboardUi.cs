@@ -315,6 +315,68 @@ internal sealed partial class MainForm
         }
     }
 
+    /// <summary>给首页外链按钮绘制参考图中的 GitHub、QQ群和赞助小图标。</summary>
+    private static void SetCommunityIcon(Button button, string kind)
+    {
+        const int size = 18;
+        var bitmap = new Bitmap(size, size);
+        using (var g = Graphics.FromImage(bitmap))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.Clear(Color.Transparent);
+            if (kind == "github")
+            {
+                using var dark = new SolidBrush(Color.FromArgb(35, 39, 46));
+                using var white = new SolidBrush(Color.White);
+                using var ink = new SolidBrush(Color.FromArgb(35, 39, 46));
+                g.FillEllipse(dark, 1, 1, 16, 16);
+                // 小号 Octocat 脸：白脸、尖耳、两只深色眼睛和底部的猫颊。
+                PointF[] face =
+                {
+                    new(4, 7), new(3, 3), new(7, 5), new(11, 5), new(15, 3),
+                    new(14, 8), new(14, 11), new(12, 14), new(10, 15), new(8, 15),
+                    new(5, 13), new(4, 10)
+                };
+                g.FillPolygon(white, face);
+                g.FillEllipse(ink, 6, 8, 1.6F, 1.8F);
+                g.FillEllipse(ink, 10.5F, 8, 1.6F, 1.8F);
+            }
+            else if (kind == "qq")
+            {
+                using var blue = new SolidBrush(Color.FromArgb(49, 119, 222));
+                using var white = new SolidBrush(Color.White);
+                using var orange = new SolidBrush(Color.FromArgb(255, 173, 44));
+                g.FillEllipse(blue, 1, 1, 16, 16);
+                g.FillEllipse(white, 5, 4, 8, 10);
+                g.FillEllipse(blue, 7, 6, 1.6F, 1.6F);
+                g.FillEllipse(blue, 10.5F, 6, 1.6F, 1.6F);
+                g.FillEllipse(orange, 7.5F, 10, 5, 2.2F);
+            }
+            else
+            {
+                using var red = new SolidBrush(Color.FromArgb(220, 61, 82));
+                using var path = new GraphicsPath();
+                path.StartFigure();
+                path.AddBezier(9, 16, 7, 14, 2, 11, 2, 7);
+                path.AddBezier(2, 7, 2, 3, 7, 2, 9, 5);
+                path.AddBezier(9, 5, 12, 1, 17, 3, 16, 8);
+                path.AddBezier(16, 8, 16, 11, 11, 14, 9, 16);
+                path.CloseFigure();
+                g.FillPath(red, path);
+            }
+        }
+        button.Image?.Dispose();
+        button.Image = bitmap;
+        button.ImageAlign = ContentAlignment.MiddleLeft;
+        button.TextImageRelation = TextImageRelation.ImageBeforeText;
+        button.Padding = new Padding(10, 0, 8, 0);
+        button.FlatStyle = FlatStyle.Flat;
+        button.FlatAppearance.BorderColor = Line;
+        button.FlatAppearance.BorderSize = 1;
+        button.TextAlign = ContentAlignment.MiddleCenter;
+        button.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
+    }
+
     private void AddNav(Panel menu, string key, string caption, int y)
     {
         var button = new NavButton
@@ -517,47 +579,52 @@ internal sealed partial class MainForm
         cards.Controls.Add(quick, 1, 0);
         status.Dock = quick.Dock = DockStyle.Fill;
 
-        // 首页免责声明与官方入口：醒目显示免费开源说明，并提供发布页、QQ群和赞助入口。
+        // 首页免责声明与官方入口，文案按用户提供的版式显示。
         var community = Surface();
         community.Dock = DockStyle.Top;
-        community.Height = 170;
+        community.Height = 196;
         community.Margin = new Padding(0, 15, 0, 0);
-        var communityTitle = Label("免责声明与相关链接", 11, true);
-        communityTitle.SetBounds(20, 12, 360, 30);
-        var disclaimer1 = Label("本软件完全免费开源。请从 GitHub 官方发布页下载；遇到付费售卖，请勿付款。", 9, true, Color.FromArgb(205, 35, 45));
-        disclaimer1.SetBounds(22, 45, 880, 23);
-        var disclaimer2 = Label("本软件用于个人学习与交流。请遵守游戏及 Steam 规则；使用过程中产生的账号风险由使用者自行了解并承担。", 9, false, Color.FromArgb(205, 35, 45));
-        disclaimer2.SetBounds(22, 69, 880, 23);
+        var communityTitle = Label("免责声明", 11, true, Color.FromArgb(205, 35, 45));
+        communityTitle.SetBounds(20, 8, 360, 24);
+        var disclaimer1 = Label("TBH助手免费下载和使用。Awan维护代码已在 GitHub 开源。", 9, false, Color.FromArgb(205, 35, 45));
+        disclaimer1.SetBounds(22, 34, 900, 22);
+        var disclaimer2 = Label("请从官方发布页下载；遇到收费售卖，请勿付款，并先核验版本。", 9, false, Color.FromArgb(205, 35, 45));
+        disclaimer2.SetBounds(22, 56, 900, 22);
+        var disclaimer3 = Label("自动化操作可能受到游戏或平台规则限制，请先阅读相关规则并自行评估账号风险。", 9, false, Color.FromArgb(205, 35, 45));
+        disclaimer3.SetBounds(22, 78, 900, 22);
+        var disclaimer4 = Label("QQ群：123777707 · 验证答案：挂机助手", 9, false, Color.FromArgb(205, 35, 45));
+        disclaimer4.SetBounds(22, 100, 900, 22);
 
         var links = new FlowLayoutPanel
         {
-            Location = new Point(18, 105), Size = new Size(900, 42),
+            Location = new Point(18, 129), Size = new Size(900, 42),
             FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
             BackColor = Color.Transparent, Margin = Padding.Empty
         };
-        var githubButton = ActionButton("GitHub 发布页");
-        githubButton.Width = 148;
+        var githubButton = ActionButton("GitHub");
+        githubButton.Width = 118;
         githubButton.Height = 34;
+        SetCommunityIcon(githubButton, "github");
         githubButton.Click += (_, _) => UpdateChecker.OpenReleasesPage();
+        githubButton.AccessibleDescription = "打开 PCFish 助手 GitHub 最新发布页";
 
-        var qqButton = ActionButton("QQ群：Awan 的助手群", Color.FromArgb(75, 97, 190));
-        qqButton.Width = 190;
+        var qqButton = ActionButton("QQ群", Color.FromArgb(232, 238, 247));
+        qqButton.Width = 112;
         qqButton.Height = 34;
+        SetCommunityIcon(qqButton, "qq");
         qqButton.Click += (_, _) => OpenExternalLink("https://qm.qq.com/q/a4N90riKrY");
+        qqButton.AccessibleDescription = "加入 Awan 的助手群，群号 123777707，验证答案：挂机助手";
 
-        var verifyAnswer = Label("群号 123777707 · 验证答案：挂机助手", 9, true, Muted);
-        verifyAnswer.AutoSize = true;
-        verifyAnswer.Height = 34;
-        verifyAnswer.Margin = new Padding(0, 0, 12, 0);
-
-        var sponsorButton = ActionButton("赞助作者", Color.FromArgb(194, 62, 74));
-        sponsorButton.Width = 120;
+        var sponsorButton = ActionButton("赞助", Color.FromArgb(255, 242, 243));
+        sponsorButton.Width = 112;
         sponsorButton.Height = 34;
-        sponsorButton.ForeColor = Color.White;
+        sponsorButton.ForeColor = Color.FromArgb(185, 49, 67);
+        SetCommunityIcon(sponsorButton, "heart");
         sponsorButton.Click += (_, _) => OpenExternalLink("https://afdian.com/a/Awan0v0?utm_source=copylink&utm_medium=link");
+        sponsorButton.AccessibleDescription = "打开 Awan 的爱发电赞助页";
 
-        links.Controls.AddRange(new Control[] { githubButton, qqButton, verifyAnswer, sponsorButton });
-        community.Controls.AddRange(new Control[] { communityTitle, disclaimer1, disclaimer2, links });
+        links.Controls.AddRange(new Control[] { githubButton, qqButton, sponsorButton });
+        community.Controls.AddRange(new Control[] { communityTitle, disclaimer1, disclaimer2, disclaimer3, disclaimer4, links });
 
         var cycle = Surface();
         cycle.Dock = DockStyle.Top;
