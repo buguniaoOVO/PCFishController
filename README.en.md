@@ -35,7 +35,7 @@ Breeding goes through the game's own data and network entry points. The controll
 
 ## Interface
 
-Overview, Auto Breeding, Auto Synthesis, Warehouse, Synthesis Route, Logs and Settings. The Auto Synthesis page holds the on/off switch, trigger threshold, the season/recipe exclusion toggle and the safety wait, plus a one-shot "Synthesize Once Now" button and the current warehouse, candidate and next-check status. The Warehouse lists species, rarity, stars, remaining breeds and cooldown, with search, filters and sortable columns. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
+Overview, Auto Breeding, Auto Synthesis, Warehouse, Synthesis Route, Logs and Settings. The Auto Synthesis page holds the on/off switch, trigger threshold, the season/recipe exclusion toggle and the safety wait, plus a one-shot "Synthesize Once Now" button and the current warehouse, candidate and next-check status. The Warehouse uses white game-style cards with fish art, rarity, stars, remaining breed uses and Steam reference price. Fish with the same name and stars are grouped with an × quantity marker. Cards are drawn as they scroll into view. Search, filters and sorting are available. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
 
 ## One-click setup
 
