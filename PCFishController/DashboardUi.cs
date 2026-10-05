@@ -41,6 +41,10 @@ internal sealed partial class MainForm
     private readonly ComboBox _warehouseFilter = new();
     private readonly ComboBox _warehouseSort = new();
     private DateTime _warehouseCdUpdateAt = DateTime.MinValue;
+    private readonly Dictionary<string, Image> _fishIconCache = new(StringComparer.OrdinalIgnoreCase);
+    private Button _btnMarket;
+    private readonly Label _lblMarketStatus = new();
+    private bool _marketBusy;
     private string _warehouseSortColumn = "grade";
     private bool _warehouseSortDescending = true;
     private readonly ComboBox _goalTypeCombo = new();
@@ -406,6 +410,7 @@ internal sealed partial class MainForm
         _lblPageSubtitle.Text = UiLanguage.T(heading.Item2);
         if (key == "warehouse" && _client.Connected && !_statePending) RequestState();
         if (key == "warehouse") RefreshWarehouse();
+        if (key == "warehouse") UpdateMarketStatusLine();
         if (key == "collection" && _client.Connected && !_statePending) RequestState();
         if (key == "collection") RefreshCollectionPage();
         if (key == "synthesis" && _client.Connected && !_statePending) RequestState();
@@ -742,6 +747,11 @@ internal sealed partial class MainForm
         header.SetBounds(18, 8, 180, 32);
         _lblWarehouseCount.SetBounds(175, 9, 210, 30);
         _lblWarehouseCount.ForeColor = Muted;
+        // 市场报价的摘要放在标题行右侧，不占额外高度。
+        _lblMarketStatus.SetBounds(400, 9, 560, 30);
+        _lblMarketStatus.ForeColor = Muted;
+        _lblMarketStatus.Font = new Font("Microsoft YaHei UI", 8F);
+        _lblMarketStatus.TextAlign = ContentAlignment.MiddleLeft;
         _warehouseSearch.SetBounds(18, 51, 210, 32);
         _warehouseSearch.PlaceholderText = "搜索鱼种或 ID";
         _warehouseSearch.BackColor = InputBg;
@@ -765,6 +775,13 @@ internal sealed partial class MainForm
         refresh.Font = new Font("Microsoft YaHei UI", 8F);
         refresh.FlatAppearance.BorderSize = 0;
         refresh.Click += (_, _) => RequestState();
+
+        // Steam 市场报价：拉一次缓存起来，仓库表里就能看到每条鱼的价格。
+        _btnMarket = ActionButton("查询市场价", Color.FromArgb(35, 122, 122));
+        _btnMarket.SetBounds(652, 50, 118, 32);
+        _btnMarket.Font = new Font("Microsoft YaHei UI", 8F);
+        _btnMarket.FlatAppearance.BorderSize = 0;
+        _btnMarket.Click += async (_, _) => await RefreshMarketAsync();
         _warehouseSearch.TextChanged += (_, _) => RefreshWarehouse();
         _warehouseFilter.SelectedIndexChanged += (_, _) => RefreshWarehouse();
         _warehouseSort.SelectedIndexChanged += (_, _) =>
@@ -773,7 +790,11 @@ internal sealed partial class MainForm
             _warehouseSortDescending = true;
             RefreshWarehouse();
         };
-        toolbar.Controls.AddRange(new Control[] { header, _lblWarehouseCount, _warehouseSearch, _warehouseFilter, _warehouseSort, refresh });
+        toolbar.Controls.AddRange(new Control[]
+        {
+            header, _lblWarehouseCount, _lblMarketStatus, _warehouseSearch, _warehouseFilter,
+            _warehouseSort, refresh, _btnMarket
+        });
 
         _warehouse.Dock = DockStyle.Fill;
         _warehouse.BackgroundColor = Card;
@@ -784,7 +805,8 @@ internal sealed partial class MainForm
         _warehouse.ColumnHeadersDefaultCellStyle.ForeColor = White;
         _warehouse.ColumnHeadersDefaultCellStyle.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
         _warehouse.ColumnHeadersHeight = 43;
-        _warehouse.RowTemplate.Height = 42;
+        // 行留得下 32 像素的鱼图。
+        _warehouse.RowTemplate.Height = 40;
         _warehouse.DefaultCellStyle.BackColor = Card;
         _warehouse.DefaultCellStyle.ForeColor = White;
         _warehouse.DefaultCellStyle.SelectionBackColor = Color.FromArgb(219, 231, 251);
@@ -805,6 +827,7 @@ internal sealed partial class MainForm
         _warehouse.Columns.Add("cooldown", "冷却 CD");
         _warehouse.Columns.Add("status", "状态");
         _warehouse.Columns.Add("level", "等级");
+        _warehouse.Columns.Add("price", "Steam 最低价");
         _warehouse.Columns.Add("id", "鱼 ID");
         foreach (DataGridViewColumn col in _warehouse.Columns) col.SortMode = DataGridViewColumnSortMode.Programmatic;
         _warehouse.ColumnHeaderMouseClick += (_, e) =>
@@ -823,17 +846,40 @@ internal sealed partial class MainForm
         };
         UpdateWarehouseSortHeaders();
         _warehouse.Columns["fish"].FillWeight = 150;
+        // 有鱼图时给左侧留出 32 像素，图由 CellPainting 画在这一块里。
+        if (FishIconPack.Available) _warehouse.Columns["fish"].DefaultCellStyle.Padding = new Padding(38, 0, 0, 0);
         _warehouse.Columns["grade"].FillWeight = 85;
         _warehouse.Columns["stars"].FillWeight = 95;
         _warehouse.Columns["breed"].FillWeight = 85;
         _warehouse.Columns["cooldown"].FillWeight = 95;
         _warehouse.Columns["status"].FillWeight = 95;
         _warehouse.Columns["level"].FillWeight = 60;
+        _warehouse.Columns["price"].FillWeight = 100;
         _warehouse.Columns["id"].FillWeight = 105;
+        // 鱼种列左边画一条游戏里的鱼图；图集缺失时这一段自动不生效。
+        _warehouse.CellPainting += (_, e) =>
+        {
+            if (e.RowIndex < 0 || e.ColumnIndex < 0) return;
+            if (_warehouse.Columns[e.ColumnIndex].Name != "fish") return;
+            if (_warehouse.Rows[e.RowIndex].Tag is not FishDto fish) return;
+            var icon = FishIcon(fish);
+            if (icon == null) return;
+            e.PaintBackground(e.CellBounds, true);
+            e.PaintContent(e.CellBounds);
+            e.Graphics.DrawImage(icon, e.CellBounds.Left + 4,
+                e.CellBounds.Top + (e.CellBounds.Height - icon.Height) / 2, icon.Width, icon.Height);
+            e.Handled = true;
+        };
         _warehouse.CellToolTipTextNeeded += (_, e) =>
         {
             if (e.RowIndex >= 0 && e.RowIndex < _warehouse.Rows.Count && _warehouse.Rows[e.RowIndex].Tag is FishDto f)
-                e.ToolTipText = $"{f.sp}\nID: {f.id}\n下次繁育: {f.nx}";
+            {
+                var tip = $"{f.sp}\nID: {f.id}\n下次繁育: {f.nx}";
+                var quote = MarketQuoteFor(f);
+                if (quote != null)
+                    tip += $"\nSteam 市场：{quote.HashName}\n最低在售 {quote.PriceText}　在售 {quote.Listed} 件";
+                e.ToolTipText = tip;
+            }
         };
         var tableCard = Surface();
         tableCard.Dock = DockStyle.Fill;
@@ -1923,6 +1969,82 @@ internal sealed partial class MainForm
         _lblOverviewLevel.Text = _tankLevel < 0 ? "—" : $"Lv {_tankLevel}";
     }
 
+    /// <summary>仓库某条鱼的图标，按 sp 缓存。取不到返回 null。</summary>
+    private Image FishIcon(FishDto fish)
+    {
+        if (fish?.sp == null) return null;
+        if (_fishIconCache.TryGetValue(fish.sp, out var cached)) return cached;
+        var icon = FishIconPack.Get(fish.sp);
+        if (icon == null) return null;
+        _fishIconCache[fish.sp] = icon;
+        return icon;
+    }
+
+    /// <summary>仓库某条鱼的 Steam 市场报价。取不到就返回 null。</summary>
+    private MarketQuote MarketQuoteFor(FishDto fish)
+    {
+        if (fish == null) return null;
+        var english = FishCatalog.EnglishName(fish.ty);
+        if (string.IsNullOrWhiteSpace(english)) return null;
+        return SteamMarket.Cached?.Find(english, fish.Stars);
+    }
+
+    private string MarketPriceText(FishDto fish)
+    {
+        var quote = MarketQuoteFor(fish);
+        if (quote != null) return UiLanguage.T("¥") + quote.Lowest.ToString("0.00");
+        return SteamMarket.Cached == null ? "—" : UiLanguage.T("无报价");
+    }
+
+    private Color MarketPriceColor(FishDto fish)
+        => MarketQuoteFor(fish) != null ? CraftableText : Muted;
+
+    /// <summary>拉取 Steam 市场报价，拉完刷新仓库表和状态行。</summary>
+    private async Task RefreshMarketAsync()
+    {
+        if (_marketBusy) return;
+        _marketBusy = true;
+        _btnMarket.Enabled = false;
+        _lblMarketStatus.ForeColor = Muted;
+        _lblMarketStatus.Text = UiLanguage.T("正在查询 Steam 市场报价…");
+        try
+        {
+            var result = await SteamMarket.FetchAsync(SteamMarket.CurrencyCny,
+                text => Ui(() => _lblMarketStatus.Text = UiLanguage.T(text)));
+            _lblMarketStatus.ForeColor = result.Ok ? Green : Pink;
+            _lblMarketStatus.Text = UiLanguage.T(result.Message);
+            _log.Write("Steam 市场：" + result.Message);
+            RefreshWarehouse();
+            if (result.Ok && _lastFish != null)
+            {
+                var matched = _lastFish.Count(f => MarketQuoteFor(f) != null);
+                _log.Write($"Steam 市场：{matched}/{_lastFish.Count} 条鱼匹配到报价。");
+            }
+        }
+        catch (Exception ex)
+        {
+            _lblMarketStatus.ForeColor = Pink;
+            _lblMarketStatus.Text = UiLanguage.T("查询失败：") + ex.Message;
+            _log.Write("Steam 市场查询异常：" + ex.Message);
+        }
+        finally
+        {
+            _marketBusy = false;
+            _btnMarket.Enabled = true;
+        }
+    }
+
+    /// <summary>启动时如果已有缓存，把状态行补上，仓库表也能立刻显示价格。</summary>
+    private void UpdateMarketStatusLine()
+    {
+        if (_lblMarketStatus.IsDisposed || _marketBusy) return;
+        var cache = SteamMarket.Cached;
+        _lblMarketStatus.ForeColor = Muted;
+        _lblMarketStatus.Text = cache == null
+            ? UiLanguage.T("未查询市场价：点「查询市场价」获取 Steam 参考价。")
+            : UiLanguage.T($"市场价：{cache.TotalItems} 条报价，更新于 {cache.FetchedAt:HH:mm}。");
+    }
+
     private void RefreshWarehouse()
     {
         if (_warehouse.Columns.Count == 0) return;
@@ -1955,12 +2077,14 @@ internal sealed partial class MainForm
             var index = _warehouse.Rows.Add(
                 $"{f.Name}  ({f.variant:00})", GradeName(f.RarityTier), StarText(f.Stars),
                 $"{f.bc} / {f.bm}", UiLanguage.T(CooldownText(f)), UiLanguage.T(FishStatus(f)), $"T{f.RarityTier}",
+                MarketPriceText(f),
                 f.id == null ? "—" : f.id.Length > 8 ? f.id[..8] : f.id);
             var row = _warehouse.Rows[index];
             row.Tag = f;
             SetQualityCell(row.Cells["fish"], f.RarityTier);
             SetQualityCell(row.Cells["grade"], f.RarityTier);
             row.Cells["stars"].Style.ForeColor = Gold;
+            row.Cells["price"].Style.ForeColor = MarketPriceColor(f);
             row.Cells["status"].Style.ForeColor = StatusColor(f);
             if (f.serverBc >= 0)
                 row.Cells["breed"].ToolTipText = UiLanguage.IsEnglish

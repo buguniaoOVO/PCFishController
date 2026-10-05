@@ -118,6 +118,13 @@ internal static class FishCatalog
         return species.Season > 0 ? $"S{species.Season} · {name}" : name;
     }
 
+    /// <summary>
+    /// 固定返回英文名，和 Steam 市场里的物品名对齐。
+    /// 市场物品名是「英文名 + 星级」，所以查价必须用英文，不能跟着界面语言走。
+    /// </summary>
+    internal static string EnglishName(string code)
+        => code != null && EnglishNames.TryGetValue(code, out var english) ? english : null;
+
     internal static string RarityName(int tier) => UiLanguage.T(tier switch
     {
         0 => "基础",

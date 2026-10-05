@@ -4,7 +4,7 @@
     <TargetFramework>net6.0</TargetFramework>
     <AssemblyName>PCFishAutoHelper</AssemblyName>
     <RootNamespace>PCFishAutoHelper</RootNamespace>
-<Version>0.33.0</Version>
+<Version>0.34.0</Version>
     <LangVersion>latest</LangVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>disable</Nullable>
