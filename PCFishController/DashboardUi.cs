@@ -300,6 +300,21 @@ internal sealed partial class MainForm
         }
     }
 
+    private void OpenExternalLink(string url)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
+            {
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            _log.Write("打开链接失败：" + ex.Message + "；" + url);
+        }
+    }
+
     private void AddNav(Panel menu, string key, string caption, int y)
     {
         var button = new NavButton
@@ -502,6 +517,48 @@ internal sealed partial class MainForm
         cards.Controls.Add(quick, 1, 0);
         status.Dock = quick.Dock = DockStyle.Fill;
 
+        // 首页免责声明与官方入口：醒目显示免费开源说明，并提供发布页、QQ群和赞助入口。
+        var community = Surface();
+        community.Dock = DockStyle.Top;
+        community.Height = 170;
+        community.Margin = new Padding(0, 15, 0, 0);
+        var communityTitle = Label("免责声明与相关链接", 11, true);
+        communityTitle.SetBounds(20, 12, 360, 30);
+        var disclaimer1 = Label("本软件完全免费开源。请从 GitHub 官方发布页下载；遇到付费售卖，请勿付款。", 9, true, Color.FromArgb(205, 35, 45));
+        disclaimer1.SetBounds(22, 45, 880, 23);
+        var disclaimer2 = Label("本软件用于个人学习与交流。请遵守游戏及 Steam 规则；使用过程中产生的账号风险由使用者自行了解并承担。", 9, false, Color.FromArgb(205, 35, 45));
+        disclaimer2.SetBounds(22, 69, 880, 23);
+
+        var links = new FlowLayoutPanel
+        {
+            Location = new Point(18, 105), Size = new Size(900, 42),
+            FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
+            BackColor = Color.Transparent, Margin = Padding.Empty
+        };
+        var githubButton = ActionButton("GitHub 发布页");
+        githubButton.Width = 148;
+        githubButton.Height = 34;
+        githubButton.Click += (_, _) => UpdateChecker.OpenReleasesPage();
+
+        var qqButton = ActionButton("QQ群：Awan 的助手群", Color.FromArgb(75, 97, 190));
+        qqButton.Width = 190;
+        qqButton.Height = 34;
+        qqButton.Click += (_, _) => OpenExternalLink("https://qm.qq.com/q/a4N90riKrY");
+
+        var verifyAnswer = Label("群号 123777707 · 验证答案：挂机助手", 9, true, Muted);
+        verifyAnswer.AutoSize = true;
+        verifyAnswer.Height = 34;
+        verifyAnswer.Margin = new Padding(0, 0, 12, 0);
+
+        var sponsorButton = ActionButton("赞助作者", Color.FromArgb(194, 62, 74));
+        sponsorButton.Width = 120;
+        sponsorButton.Height = 34;
+        sponsorButton.ForeColor = Color.White;
+        sponsorButton.Click += (_, _) => OpenExternalLink("https://afdian.com/a/Awan0v0?utm_source=copylink&utm_medium=link");
+
+        links.Controls.AddRange(new Control[] { githubButton, qqButton, verifyAnswer, sponsorButton });
+        community.Controls.AddRange(new Control[] { communityTitle, disclaimer1, disclaimer2, links });
+
         var cycle = Surface();
         cycle.Dock = DockStyle.Top;
         cycle.Height = 110;
@@ -515,6 +572,7 @@ internal sealed partial class MainForm
         _lblCountdown.ForeColor = Blue;
         cycle.Controls.Add(_lblCountdown);
         cycle.Controls.Add(cycleTitle);
+        page.Controls.Add(community);
         page.Controls.Add(cycle);
         page.Controls.Add(cards);
         page.Controls.Add(metrics);
