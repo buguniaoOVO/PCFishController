@@ -29,6 +29,7 @@ internal sealed partial class MainForm
     private readonly Label _lblPageSubtitle = new();
     private readonly Label _lblHeaderConnection = new();
     private readonly Label _lblRunState = new();
+    private Button _btnRecheck;
     private Button _btnStartAll, _btnStopAll;
     private readonly Label _lblOverviewFish = new();
     private readonly Label _lblOverviewReady = new();
@@ -207,7 +208,16 @@ internal sealed partial class MainForm
             Size = new Size(478, 36), WrapContents = false, BackColor = Color.Transparent,
             FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty
         };
-        runControls.Controls.AddRange(new Control[] { _lblRunState, _lblHeaderConnection, _btnStartAll, _btnStopAll });
+        _btnRecheck = ActionButton("重新检测", Color.FromArgb(232, 238, 247));
+        _btnRecheck.Size = new Size(96, 34);
+        _btnRecheck.Margin = new Padding(0, 0, 8, 0);
+        _btnRecheck.ForeColor = Color.FromArgb(71, 85, 105);
+        _btnRecheck.Click += (_, _) => RecheckStartupNow();
+        _btnRecheck.Visible = false;
+        runControls.Controls.AddRange(new Control[]
+        {
+            _lblRunState, _btnRecheck, _lblHeaderConnection, _btnStartAll, _btnStopAll
+        });
         void PlaceRunControls()
         {
             var compact = header.ClientSize.Width < 800;
@@ -1870,20 +1880,41 @@ internal sealed partial class MainForm
     private void UpdateDashboardSummary()
     {
         if (_lblHeaderConnection.IsDisposed) return;
-        var paused = _windowLocked || _actionPauseReason.Length > 0 ||
+
+        // 开机自检期间：显示「初始化中」，并且明确还没连接。
+        // 这时候不允许连接游戏，状态要如实反映，不能让用户以为已经连上了。
+        if (_startupCheckPending)
+        {
+            _lblRunState.Text = "● " + UiLanguage.T("初始化中");
+            _lblRunState.ForeColor = Color.FromArgb(143, 87, 0);
+            _lblRunState.BackColor = Color.FromArgb(255, 243, 212);
+            _lblHeaderConnection.Text = UiLanguage.T("● 未连接");
+            _lblHeaderConnection.ForeColor = Muted;
+            if (_btnRecheck != null) _btnRecheck.Visible = false;
+            _lblOverviewFish.Text = _lastFish?.Count.ToString() ?? "—";
+            _lblOverviewReady.Text = _lastFish?.Count(f => Selection.CanBreed(f) && Selection.IsOffCooldown(f)).ToString() ?? "—";
+            _lblOverviewHeart.Text = _charge < 0 ? "—" : $"{_charge} / 5";
+            _lblOverviewLevel.Text = _tankLevel < 0 ? "—" : $"Lv {_tankLevel}";
+            return;
+        }
+
+        var blocked = !_startupCheckOk;
+        var paused = blocked || _windowLocked || _actionPauseReason.Length > 0 ||
             _client.Connected && (!_bridgeVersionOk || !_bridgeAllowsActions);
         var waiting = _chkAuto.Checked && !_armed;
-        var state = !_chkAuto.Checked && !_armed ? "已停止"
+        var state = blocked ? "环境未就绪"
+            : !_chkAuto.Checked && !_armed ? "已停止"
             : paused ? "已暂停"
             : !_client.Connected ? "等待连接"
             : waiting ? "正在开启" : "正在运行";
         _lblRunState.Text = "● " + UiLanguage.T(state);
         _lblRunState.ForeColor = state == "正在运行" ? Color.FromArgb(17, 108, 62)
-            : state is "已暂停" or "等待连接" or "正在开启" ? Color.FromArgb(143, 87, 0)
+            : state is "已暂停" or "等待连接" or "正在开启" or "环境未就绪" ? Color.FromArgb(143, 87, 0)
             : Color.FromArgb(96, 108, 125);
         _lblRunState.BackColor = state == "正在运行" ? Color.FromArgb(221, 246, 232)
-            : state is "已暂停" or "等待连接" or "正在开启" ? Color.FromArgb(255, 243, 212)
+            : state is "已暂停" or "等待连接" or "正在开启" or "环境未就绪" ? Color.FromArgb(255, 243, 212)
             : Color.FromArgb(235, 239, 244);
+        if (_btnRecheck != null) _btnRecheck.Visible = blocked;
         _lblHeaderConnection.Text = UiLanguage.T(_client.Connected ? "● 已连接" : "● 未连接");
         _lblHeaderConnection.ForeColor = _client.Connected ? Green : Muted;
         _lblOverviewFish.Text = _lastFish?.Count.ToString() ?? "—";

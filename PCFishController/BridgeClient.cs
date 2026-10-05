@@ -17,6 +17,8 @@ internal sealed class BridgeClient : IDisposable
     private Thread _thread;
     private volatile bool _wanted;
     private volatile bool _connected;
+    /// <summary>为 null 表示随时可连；返回 false 时跳过本轮连接尝试。</summary>
+    private Func<bool> _allowConnect;
 
     internal bool Connected => _connected;
 
@@ -29,8 +31,13 @@ internal sealed class BridgeClient : IDisposable
         _port = port;
     }
 
-    internal void Start()
+    /// <summary>
+    /// 启动重连线程。allowConnect 返回 false 时表示「暂时不允许连接」——线程照常起来，
+    /// 但不建连接。开机自检通过后返回 true，下一次轮询就会立刻连上。
+    /// </summary>
+    internal void Start(Func<bool> allowConnect = null)
     {
+        _allowConnect = allowConnect;
         _wanted = true;
         if (_thread != null) return;
         _thread = new Thread(Loop) { IsBackground = true, Name = "bridge-client" };
@@ -59,6 +66,11 @@ internal sealed class BridgeClient : IDisposable
     {
         while (_wanted)
         {
+            if (_allowConnect != null && !_allowConnect())
+            {
+                for (var i = 0; i < 3 && _wanted; i++) Thread.Sleep(100);
+                continue;
+            }
             try
             {
                 var tcp = new TcpClient { NoDelay = true };

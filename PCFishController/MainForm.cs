@@ -15,7 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
-private const string ExpectedBridgeVersion = "0.32.0";
+private const string ExpectedBridgeVersion = "0.33.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
@@ -23,6 +23,10 @@ private const string ExpectedBridgeVersion = "0.32.0";
     private ContextMenuStrip _trayMenu;
     private bool _allowClose;
     private DateTime _nextConsoleCheckAt;
+    /// <summary>开机自检状态。pending 时不允许连接游戏。</summary>
+    private bool _startupCheckPending = true;
+    private bool _startupCheckOk;
+    private string _startupCheckDetail = "";
     private DateTime _nextUpdateCheckAt = DateTime.MinValue;
     private bool _updateCheckRunning;
     private string _notifiedUpdateTag = "";
@@ -175,12 +179,143 @@ private const string ExpectedBridgeVersion = "0.32.0";
         // 启动后约 3 秒做一次自动更新检查，先让界面和桥接连接稳定下来。
         if (_settings.AutoCheckUpdate) _nextUpdateCheckAt = DateTime.Now.AddSeconds(3);
 
-        _client.Start();
+        // 开机自检没通过之前不允许连接游戏：界面先显示「初始化中」，
+        // 检测通过后才放行连接。
+        // 只有自检通过才允许连接：检测中和检测失败都保持断开。
+        _client.Start(() => _startupCheckOk);
         HideGameConsoleIfNeeded();
 
         _timer.Interval = 1000;
         _timer.Start();
+
+        // 自检涉及磁盘和 BepInEx 目录，放到界面显示之后再跑，避免启动时卡一下。
+        // 必须等窗口句柄建好（Load）才能弹对话框，所以在构造函数里挂 Load。
+        Load += (_, _) => _ = RunStartupCheckAsync();
     }
+
+    /// <summary>
+    /// 启动自检：确认游戏环境和插件与助手一致。检测期间界面显示「初始化中」，
+    /// 并且不允许连接；检测通过后才放行连接。
+    /// </summary>
+    private async Task RunStartupCheckAsync()
+    {
+        StartupCheckResult result;
+        try
+        {
+            result = await Task.Run(() => StartupCheck.Run(_settings.GameDir));
+        }
+        catch (Exception ex)
+        {
+            result = new StartupCheckResult
+            {
+                Ok = false,
+                Summary = "运行环境检测异常",
+                BlockingReason = "检测运行环境时出错：" + ex.Message,
+                FixableByDeploy = false
+            };
+        }
+
+        _startupCheckOk = result.Ok;
+        _startupCheckDetail = result.Summary;
+        // 检测已经结束：无论通过与否都退出「初始化中」。
+        // 通过就放行连接；没通过则停在「环境未就绪」，连接保持关闭。
+        _startupCheckPending = false;
+        foreach (var detail in result.Details) _log.Write("启动自检：" + detail);
+        _log.Write("启动自检：" + (result.Ok ? "通过 —— " + result.Summary : "未通过 —— " + result.Summary));
+
+        if (result.Ok)
+        {
+            // 通过：放行连接，让桥接立刻连上。
+            UpdateStatusLabels();
+            return;
+        }
+
+        _log.Write("启动自检未通过，已暂停连接：" + result.BlockingReason);
+        UpdateStatusLabels();
+
+        var buttons = result.FixableByDeploy
+            ? MessageBoxButtons.YesNo
+            : MessageBoxButtons.OK;
+        var text = UiLanguage.T("运行环境检测未通过：") + result.Summary + Environment.NewLine + Environment.NewLine +
+                   UiLanguage.T(result.BlockingReason) + Environment.NewLine;
+        if (result.FixableByDeploy)
+            text += Environment.NewLine + UiLanguage.T("是否现在执行一键部署来修好它？");
+
+        var answer = MessageBox.Show(this, text,
+            UiLanguage.T("PCFish 助手 · 初始化"),
+            buttons, result.FixableByDeploy ? MessageBoxIcon.Question : MessageBoxIcon.Warning);
+
+        if (result.FixableByDeploy && answer == DialogResult.Yes)
+        {
+            ShowPage("settings");
+            await RunDeployAsync();
+            // 部署完再自检一次，通过就自动放行连接。
+            await RecheckStartupAsync();
+            return;
+        }
+
+        VerifyFixPrompt();
+
+    }
+
+    /// <summary>
+    /// 再自检一次。一键部署之后调用：修好了就放行连接，仍不行就提示用户手动处理。
+    /// </summary>
+    private async Task RecheckStartupAsync()
+    {
+        StartupCheckResult result;
+        try
+        {
+            result = await Task.Run(() => StartupCheck.Run(_settings.GameDir));
+        }
+        catch (Exception ex)
+        {
+            result = new StartupCheckResult
+            {
+                Ok = false,
+                Summary = "运行环境检测异常",
+                BlockingReason = "检测运行环境时出错：" + ex.Message,
+                FixableByDeploy = false
+            };
+        }
+
+        foreach (var detail in result.Details) _log.Write("启动自检：" + detail);
+        if (result.Ok)
+        {
+            _startupCheckOk = true;
+            _startupCheckDetail = result.Summary;
+            _startupCheckPending = false;
+            _log.Write("启动自检复检通过：" + result.Summary + "；放行连接。");
+            UpdateStatusLabels();
+            return;
+        }
+
+        _startupCheckOk = false;
+        _startupCheckDetail = result.Summary;
+        _log.Write("启动自检复检仍未通过：" + result.BlockingReason);
+        UpdateStatusLabels();
+        MessageBox.Show(this,
+            UiLanguage.T("运行环境仍未就绪：") + result.Summary + Environment.NewLine + Environment.NewLine +
+            UiLanguage.T(result.BlockingReason) + Environment.NewLine + Environment.NewLine +
+            UiLanguage.T("修好后点「重新检测」，助手才会连接游戏。"),
+            UiLanguage.T("PCFish 助手 · 初始化"),
+            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        VerifyFixPrompt();
+    }
+
+    /// <summary>自检未通过时，问用户要不要再检测一次；通过才放行连接。</summary>
+    private void VerifyFixPrompt()
+    {
+        var answer = MessageBox.Show(this,
+            UiLanguage.T("修好之后点「是」重新检测；点「否」则暂不连接游戏。") + Environment.NewLine +
+            UiLanguage.T("之后也可以随时点「重新检测」。"),
+            UiLanguage.T("PCFish 助手 · 初始化"),
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (answer == DialogResult.Yes) _ = RecheckStartupAsync();
+    }
+
+    /// <summary>用户手动点「重新检测」。</summary>
+    private void RecheckStartupNow() => _ = RecheckStartupAsync();
 
     /// <summary>掷一次下一轮间隔。用户要的是"每个 20-30 分钟"，也就是在这区间里随机。</summary>
     private void RollNextInterval()
@@ -581,6 +716,16 @@ private const string ExpectedBridgeVersion = "0.32.0";
 
     private void SendArm(bool on)
     {
+        if (on && _startupCheckPending)
+        {
+            _log.Write("初始化中：正在检测运行环境，检测通过后才能放行动作。");
+            return;
+        }
+        if (on && !_startupCheckOk)
+        {
+            _log.Write("运行环境检测未通过，暂不放行动作。请点「重新检测」或到「设置 → 一键部署」修复。");
+            return;
+        }
         if (on && _breedRequest.Active)
         {
             RequestBreedStatus();
@@ -699,6 +844,11 @@ private const string ExpectedBridgeVersion = "0.32.0";
         reason = "";
         if (_awaitingMerge) { reason = "上一笔合成还在进行中，稍候。"; return false; }
         if (!_chkMerge.Checked && !force) return false;
+        if (_startupCheckPending || !_startupCheckOk)
+        {
+            reason = "运行环境尚未就绪，暂不合成。";
+            return false;
+        }
         if (!_armed || !_bridgeVersionOk || !_bridgeAllowsActions)
         {
             reason = "自动合成未执行：需要先放行动作（ARM）并保持桥接连接。";
@@ -1549,7 +1699,16 @@ private const string ExpectedBridgeVersion = "0.32.0";
             _lblBridge.Text = UiLanguage.T($"桥接连接：未连接（正在重试 127.0.0.1:{_settings.Port}）");
         }
 
-        if (_serverAuditPending || _armAfterServerAudit || _beginRoundAfterServerAudit)
+        if (_startupCheckPending)
+        {
+            _lblCountdown.Text = UiLanguage.T("初始化中：正在检测游戏运行环境和插件…");
+        }
+        else if (!_startupCheckOk)
+        {
+            _lblCountdown.Text = UiLanguage.T("初始化未通过：") + _startupCheckDetail +
+                UiLanguage.T("。点「重新检测」，或到「设置 → 一键部署」修复。");
+        }
+        else if (_serverAuditPending || _armAfterServerAudit || _beginRoundAfterServerAudit)
         {
             _lblCountdown.Text = UiLanguage.T("正在核对服务器繁育次数…");
         }
