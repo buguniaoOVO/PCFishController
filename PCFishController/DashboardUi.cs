@@ -2033,8 +2033,10 @@ internal sealed partial class MainForm
             var icon = _getIcon?.Invoke(fish);
             if (icon != null)
             {
-                var iconBox = new Rectangle(bounds.Left + 5, bounds.Top + 41, bounds.Width - 10, 62);
-                var scale = Math.Min(1.0F, Math.Min(iconBox.Width / (float)icon.Width, iconBox.Height / (float)icon.Height));
+                var iconBox = new Rectangle(bounds.Left + 5, bounds.Top + 41, bounds.Width - 10, 64);
+                var fit = Math.Min(iconBox.Width / (float)icon.Width, iconBox.Height / (float)icon.Height);
+                // 放得下时用整数倍放大鱼图；大鱼则按最近邻等比缩小到图框内。
+                var scale = fit >= 1F ? Math.Max(1, (int)Math.Floor(fit)) : fit;
                 var drawW = Math.Max(1, (int)Math.Round(icon.Width * scale));
                 var drawH = Math.Max(1, (int)Math.Round(icon.Height * scale));
                 var imageRect = new Rectangle(iconBox.Left + (iconBox.Width - drawW) / 2,
@@ -2054,11 +2056,26 @@ internal sealed partial class MainForm
                 new Rectangle(bounds.Left + 2, bounds.Top + 140, bounds.Width - 4, 24));
         }
 
+        private static readonly StringFormat CenterFormat = new()
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+        private static readonly StringFormat RightFormat = new()
+        {
+            Alignment = StringAlignment.Far,
+            LineAlignment = StringAlignment.Center,
+            Trimming = StringTrimming.EllipsisCharacter,
+            FormatFlags = StringFormatFlags.NoWrap
+        };
+
         private static void DrawRight(Graphics g, string text, Font font, Color color, Rectangle rect)
         {
-            TextRenderer.DrawText(g, text, font, rect, color,
-                TextFormatFlags.Right | TextFormatFlags.VerticalCenter |
-                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            if (string.IsNullOrEmpty(text)) return;
+            using var brush = new SolidBrush(color);
+            g.DrawString(text, font, brush, rect, RightFormat);
         }
 
         private static Color ReadableQuality(Color color)
@@ -2067,9 +2084,10 @@ internal sealed partial class MainForm
         private static void DrawCentered(Graphics g, string text, Font font, Color color, Rectangle rect)
         {
             if (string.IsNullOrEmpty(text)) return;
-            TextRenderer.DrawText(g, text, font, rect, color,
-                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
-                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            using var brush = new SolidBrush(color);
+            // Graphics.DrawString follows the same scroll transform as card images/borders.
+            // TextRenderer.DrawText ignores that transform, which made scrolled cards show only fish art.
+            g.DrawString(text, font, brush, rect, CenterFormat);
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
