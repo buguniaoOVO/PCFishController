@@ -139,6 +139,8 @@ internal static class UiLanguage
         ["服务器次数用尽"] = "No server breed uses",
         ["服务器未找到"] = "Not found on server",
         ["服务器次数核对失败，点击 ARM 重新核对"] = "Server count check failed. Click ARM to retry.",
+        ["服务器次数核对失败，稍后自动重试"] = "Server count check failed; retrying automatically",
+        ["服务器次数核对超时，稍后自动重试"] = "Server count check timed out; retrying automatically",
         ["本笔结果未知，等待游戏回包后点击 ARM 恢复"] = "Result unknown. Wait for the game response, then click ARM to resume.",
         ["请求或收尾失败，确认游戏恢复后点击 ARM 继续"] = "Request or completion failed. Confirm the game has recovered, then click ARM to resume.",
         ["等待游戏数据"] = "Waiting for game data",

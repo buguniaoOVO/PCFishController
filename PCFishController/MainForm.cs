@@ -15,7 +15,7 @@ namespace PCFishController;
 /// </summary>
 internal sealed partial class MainForm : Form
 {
-private const string ExpectedBridgeVersion = "0.31.0";
+private const string ExpectedBridgeVersion = "0.32.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
     private readonly BridgeClient _client;
@@ -138,6 +138,8 @@ private const string ExpectedBridgeVersion = "0.31.0";
     private DateTime _serverAuditLogAt = DateTime.MinValue;
     private string _serverAuditWaitReason = "";
     private int _serverAuditBusyCount;
+    /// <summary>连续核对失败的次数，用来做退避，避免失败时每几秒压着游戏问一次。</summary>
+    private int _auditFailCount;
     private int _actionWaitSeconds;
 
     /// <summary>发起繁殖前的鱼群快照。繁殖成功后拿它做对照，把"到底消耗了什么"打出来。</summary>
@@ -595,6 +597,8 @@ private const string ExpectedBridgeVersion = "0.31.0";
         if (on && !_serverInventoryReady)
         {
             _armAfterServerAudit = true;
+            // 上一次失败后可能还压着退避时间，这里要清掉，才能立刻重新核对。
+            _serverAuditRetryAt = DateTime.MinValue;
             RequestServerAudit();
             return;
         }
@@ -1066,15 +1070,23 @@ private const string ExpectedBridgeVersion = "0.31.0";
                     _serverAuditRetryAt = DateTime.Now.AddSeconds(backoff);
                     return;
                 }
-                _actionPauseReason = "服务器次数核对失败，点击 ARM 重新核对";
+                // 失败不是致命错误：多数是网络抖动，或刚好撞上服务器维护。
+                // 记录原因并安排退避重试，不要求用户手动点 ARM，挂机时也能自己恢复。
+                _auditFailCount++;
+                var retryDelay = Math.Min(300, 15 * _auditFailCount);
+                _serverInventoryReady = false;
+                _autoResumeAt = DateTime.Now.AddSeconds(retryDelay);
+                _actionPauseReason = "服务器次数核对失败，稍后自动重试";
                 SendArm(false);
-                _log.Write("服务器库存核对未完成：" + msg.msg);
+                _log.Write($"服务器库存核对未完成：{msg.msg}" +
+                    $"；{retryDelay} 秒后自动重试第 {_auditFailCount} 次。");
                 EndRound();
                 return;
             }
             _lastServerAuditAt = DateTime.Now;
             _serverAuditWaitReason = "";
             _serverAuditBusyCount = 0;
+            _auditFailCount = 0;
             try
             {
                 using var report = JsonDocument.Parse(msg.msg);
@@ -1285,23 +1297,31 @@ private const string ExpectedBridgeVersion = "0.31.0";
 
         // 瞬时网络失败会自动恢复：暂停只影响这一笔，不该让挂机永久停摆。
         if (_autoResumeAt != DateTime.MinValue && DateTime.Now >= _autoResumeAt &&
-            !_armed && !_roundActive && !_awaitingBreed && _chkAuto.Checked &&
+            !_armed && !_roundActive && !_awaitingBreed && (_chkAuto.Checked || _settings.AutoMerge) &&
             _client.Connected && _bridgeVersionOk && !_windowLocked && !_gameBusy && !_breedRequest.Active)
         {
             _autoResumeAt = DateTime.MinValue;
             _actionPauseReason = "";
+            // 核对没过关时先补核对再 ARM。SendArm 会走 _armAfterServerAudit 这条路，
+            // 核对成功后自动放行；这样「核对失败」也能在没有用户干预的情况下自愈。
+            _nextCheckAt = DateTime.Now;
             SendArm(true);
-            _log.Write("瞬时失败已过等待期，自动恢复自动繁育。");
+            _log.Write("瞬时失败已过等待期，自动恢复。");
             UpdateDashboardSummary();
         }
         if (!_serverAuditPending && (_armAfterServerAudit || _beginRoundAfterServerAudit) &&
             DateTime.Now >= _serverAuditRetryAt) RequestServerAudit();
         if (_serverAuditPending && (DateTime.Now - _serverAuditRequestedAt).TotalSeconds > 25)
         {
+            // 核对超时同样按可恢复处理：退避后自动重试，不用用户手动点 ARM。
             _serverAuditPending = false;
             _serverInventoryReady = false;
-            _actionPauseReason = "服务器次数核对失败，点击 ARM 重新核对";
+            _auditFailCount++;
+            var backoff = Math.Min(300, 15 * _auditFailCount);
+            _autoResumeAt = DateTime.Now.AddSeconds(backoff);
+            _actionPauseReason = "服务器次数核对超时，稍后自动重试";
             SendArm(false);
+            _log.Write($"服务器次数核对超时；{backoff} 秒后自动重试第 {_auditFailCount} 次。");
             EndRound();
         }
         if ((_activePage == "warehouse" || _activePage == "synthesis" || _activePage == "collection") &&
