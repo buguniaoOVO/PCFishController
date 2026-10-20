@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Http;
 using System.Text.Json;
+using System.Threading;
 
 namespace PCFishController;
 
@@ -16,6 +17,10 @@ internal sealed class MarketQuote
     /// <summary>最低出售求购价，没有就为 0。</summary>
     internal decimal HighestBuy;
     internal string BuyText = "";
+    /// <summary>Steam 返回的近期成交中位价；没有成交记录时为空。</summary>
+    internal decimal? RecentSaleMedian;
+    /// <summary>市场保护比较价：优先近期成交中位价，没有数据时用最低在售价。</summary>
+    internal decimal MergeProtectionPrice => RecentSaleMedian ?? Lowest;
     /// <summary>成交笔数，用来判断报价可不可信。</summary>
     internal int Sold;
     /// <summary>市场上流通的数量。</summary>
@@ -74,7 +79,7 @@ internal static class SteamMarket
         return client;
     }
 
-    /// <summary>拉取全部报价。每页 100 条，最多翻 12 页，避免意外打爆上游。</summary>
+    /// <summary>拉取全部报价。每页请求 100 条，最多翻 60 页；Steam 实际每页通常返回 10 条。</summary>
     internal static async Task<MarketLookupResult> FetchAsync(int currency, Action<string> report = null)
     {
         var result = new MarketLookupResult();
@@ -86,6 +91,7 @@ internal static class SteamMarket
             using var client = CreateClient();
             var total = -1;
             var start = 0;
+            var searchComplete = false;
             // 实测 Steam 的 search/render 每次最多返回 10 条，count 传更大也没用，
             // 所以按「实际返回多少条」推进偏移，否则会跳过中间的物品。
             const int pageSize = 100;
@@ -96,8 +102,7 @@ internal static class SteamMarket
                 if (!response.IsSuccessStatusCode)
                 {
                     result.Message = $"Steam 市场查询失败：HTTP {(int)response.StatusCode}。";
-                    if (quotes.Count == 0) return result;
-                    break;
+                    return result;
                 }
                 var json = await response.Content.ReadAsStringAsync();
                 using var doc = JsonDocument.Parse(json);
@@ -105,13 +110,16 @@ internal static class SteamMarket
                 if (root.TryGetProperty("success", out var ok) && ok.ValueKind == JsonValueKind.False)
                 {
                     result.Message = "Steam 市场返回失败，稍后再试。";
-                    if (quotes.Count == 0) return result;
-                    break;
+                    return result;
                 }
                 if (total < 0 && root.TryGetProperty("total_count", out var count) && count.TryGetInt32(out var n))
                     total = n;
 
-                if (!root.TryGetProperty("results", out var items) || items.ValueKind != JsonValueKind.Array) break;
+                if (!root.TryGetProperty("results", out var items) || items.ValueKind != JsonValueKind.Array)
+                {
+                    result.Message = "Steam 市场未返回完整报价列表，稍后再试。";
+                    return result;
+                }
                 var before = quotes.Count;
                 var returned = 0;
                 foreach (var item in items.EnumerateArray())
@@ -128,16 +136,46 @@ internal static class SteamMarket
                 // 避免上游给出重复页时无限翻下去。
                 start += returned;
                 report?.Invoke($"已读取 {quotes.Count} 条报价…");
-                if (returned == 0 || quotes.Count == before) break;
-                if (total > 0 && start >= total) break;
+                if (returned == 0)
+                {
+                    if (total > start)
+                    {
+                        result.Message = "Steam 市场报价列表提前结束，未启用市场保护。";
+                        return result;
+                    }
+                    searchComplete = true;
+                    break;
+                }
+                if (total > 0 && start >= total)
+                {
+                    searchComplete = true;
+                    break;
+                }
+                if (quotes.Count == before)
+                {
+                    result.Message = "Steam 市场翻页未返回新报价，完整扫描失败。";
+                    return result;
+                }
+            }
+
+            if (!searchComplete)
+            {
+                result.Message = "Steam 市场报价列表超过扫描页数上限，未启用市场保护。";
+                return result;
             }
 
             result.Ok = quotes.Count > 0;
             result.TotalItems = quotes.Count;
+            if (!result.Ok)
+            {
+                result.Message = "Steam 市场没有返回可识别的报价。";
+                return result;
+            }
+
+            await FetchRecentSaleMediansAsync(client, quotes.Values.ToList(), report);
             result.FetchedAt = DateTime.Now;
-            result.Message = result.Ok
-                ? $"已获取 {quotes.Count} 条 Steam 市场报价。"
-                : "Steam 市场没有返回可识别的报价。";
+            var withRecentSales = quotes.Values.Count(quote => quote.RecentSaleMedian.HasValue);
+            result.Message = $"已获取 {quotes.Count} 条 Steam 市场报价，读取到 {withRecentSales} 条近期成交中位价。";
             if (result.Ok) _cache = result;
             return result;
         }
@@ -146,6 +184,47 @@ internal static class SteamMarket
             result.Message = "Steam 市场查询失败：" + ex.Message;
             return result;
         }
+    }
+
+    private static async Task FetchRecentSaleMediansAsync(HttpClient client, List<MarketQuote> quotes, Action<string> report)
+    {
+        if (quotes.Count == 0) return;
+
+        var completed = 0;
+        using var gate = new SemaphoreSlim(2, 2);
+        var tasks = quotes.Select(async quote =>
+        {
+            await gate.WaitAsync();
+            try
+            {
+                var url = "https://steamcommunity.com/market/priceoverview/?appid=" + AppId +
+                          "&currency=" + CurrencyCny + "&market_hash_name=" + Uri.EscapeDataString(quote.HashName);
+                using var response = await client.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                {
+                    using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+                    var root = document.RootElement;
+                    if (root.TryGetProperty("success", out var success) && success.ValueKind == JsonValueKind.True &&
+                        root.TryGetProperty("median_price", out var median))
+                    {
+                        var price = ParsePrice(median.GetString() ?? "");
+                        if (price > 0m) quote.RecentSaleMedian = price;
+                    }
+                }
+            }
+            catch
+            {
+                // 没有近期成交数据时，市场保护会回退到最低在售价。
+            }
+            finally
+            {
+                gate.Release();
+                var current = Interlocked.Increment(ref completed);
+                if (current == quotes.Count || current % 10 == 0)
+                    report?.Invoke($"已读取 {current}/{quotes.Count} 条近期成交价…");
+            }
+        }).ToArray();
+        await Task.WhenAll(tasks);
     }
 
     private static MarketQuote ParseQuote(JsonElement item)

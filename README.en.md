@@ -27,7 +27,10 @@ Breeding goes through the game's own data and network entry points. The controll
 - Verifies breeding results against parent counts and the returned new fish ID
 - Reads your remaining breed counts from the server before each round, to filter out a stale local cache
 - Tracks delayed replies and checks fish changes before resuming a timed-out request
-- Runs auto synthesis when the warehouse passes a configurable threshold (900 by default). It excludes season fish and season recipe fish, prefers fish with no breed uses left, and confirms each craft by re-reading the fish list
+- Runs auto synthesis when the warehouse passes a configurable threshold (900 by default). The enabled-by-default market filter skips fish whose Steam recent-sale median is above ¥1; it falls back to the lowest listing when no median is available
+- Pauses auto synthesis when the Steam listing scan is incomplete. Seasonal fish are always excluded; Season 1 recipe fish can be used
+- Selects 10 fish with the same rarity and star grade, preferring the highest rarity and star group
+- Confirms each craft by re-reading the fish list
 - Synthesis follows real click steps: open the function window, switch to the Merge tab, click "+" once per fish, then click Synthesize. It waits for the animation, closes the result popup, then closes the window, with a pause between each step
 - Dismisses the game's own dialog (for example "a network error occurred") when it appears, records it, and retries later
 - A configurable safety wait (5 seconds by default) runs after each craft before the next action
@@ -35,7 +38,7 @@ Breeding goes through the game's own data and network entry points. The controll
 
 ## Interface
 
-Overview, Auto Breeding, Auto Synthesis, Warehouse, Synthesis Route, Logs and Settings. The Auto Synthesis page holds the on/off switch, trigger threshold, the season/recipe exclusion toggle and the safety wait, plus a one-shot "Synthesize Once Now" button and the current warehouse, candidate and next-check status. The Warehouse uses white game-style cards with fish art, rarity, stars, remaining breed uses and Steam reference price. Fish with the same name and stars are grouped with an × quantity marker. Cards are drawn as they scroll into view. Search, filters and sorting are available. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
+Overview, Auto Breeding, Auto Synthesis, Warehouse, Synthesis Route, Logs and Settings. The Auto Synthesis page holds the on/off switch, market protection toggle, trigger threshold and safety wait, plus a one-shot "Synthesize Once Now" button and the current warehouse, candidate and next-check status. The Warehouse uses white game-style cards with fish art, rarity, stars, remaining breed uses and Steam recent-sale median (or lowest listing when no median is available). Fish with the same name and stars are grouped with an × quantity marker. Cards are drawn as they scroll into view. Search, filters and sorting are available. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
 
 ## One-click setup
 

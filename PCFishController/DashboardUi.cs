@@ -792,10 +792,12 @@ internal sealed partial class MainForm
         _chkMerge.Text = "自动合成";
         _chkMerge.Checked = _settings.AutoMerge;
         StyleCheck(_chkMerge);
-        _chkMergeExcludeSeasonal.SetBounds(205, 58, 250, 36);
-        _chkMergeExcludeSeasonal.Text = "排除赛季鱼与配方鱼";
-        _chkMergeExcludeSeasonal.Checked = _settings.AutoMergeExcludeSeasonal;
-        StyleCheck(_chkMergeExcludeSeasonal);
+        _chkProtectMarketPrice.SetBounds(205, 58, 360, 36);
+        _chkProtectMarketPrice.Text = "保护成交价高于 ¥1 的鱼";
+        _chkProtectMarketPrice.Checked = _settings.AutoMergeProtectMarketPriceAboveOneYuan;
+        StyleCheck(_chkProtectMarketPrice);
+        _mergeProtectionTip.SetToolTip(_chkProtectMarketPrice,
+            UiLanguage.T("按 Steam 近期成交中位价保护；无成交数据时使用最低在售价。关闭后不按市场价筛鱼。赛季鱼始终跳过。"));
 
         var thresholdTitle = Label("触发阈值（仓库鱼数）", 9, false, Muted);
         thresholdTitle.SetBounds(22, 110, 190, 25);
@@ -815,12 +817,12 @@ internal sealed partial class MainForm
         _numMergeSafety.Value = Math.Clamp(_settings.MergeSafetySeconds, 1, 60);
         StyleNumber(_numMergeSafety);
 
-        var ruleHint = Label("每次合并 10 条；优先使用 0 繁育次数、稀有度最低的鱼。", 9, false, Muted);
+        var ruleHint = Label("每次选择 10 条同稀有度、同星级鱼；优先高稀有度，赛季鱼始终跳过。", 9, false, Muted);
         ruleHint.SetBounds(22, 192, 700, 24);
 
         settings.Controls.AddRange(new Control[]
         {
-            heading, _chkMerge, _chkMergeExcludeSeasonal, thresholdTitle, _numMergeThreshold,
+            heading, _chkMerge, _chkProtectMarketPrice, thresholdTitle, _numMergeThreshold,
             safetyTitle, _numMergeSafety, ruleHint
         });
 
@@ -2259,7 +2261,12 @@ internal sealed partial class MainForm
                     $"ID: {f.id} — {f.bc}/{f.bm}, {UiLanguage.T(CooldownText(f))}"));
             }
             if (quote != null)
-                tip += $"\nSteam：{quote.HashName}\n最低在售 {quote.PriceText}　在售 {quote.Listed} 件";
+            {
+                var median = quote.RecentSaleMedian.HasValue
+                    ? UiLanguage.T("¥") + quote.RecentSaleMedian.Value.ToString("0.00")
+                    : UiLanguage.T("无近期成交中位价");
+                tip += $"\nSteam：{quote.HashName}\n{UiLanguage.T("近期成交中位价")} {median}\n最低在售 {quote.PriceText}　在售 {quote.Listed} 件";
+            }
             return tip;
         }
     }
@@ -2287,7 +2294,7 @@ internal sealed partial class MainForm
     private string MarketPriceText(FishDto fish)
     {
         var quote = MarketQuoteFor(fish);
-        if (quote != null) return UiLanguage.T("¥") + quote.Lowest.ToString("0.00");
+        if (quote != null) return UiLanguage.T("¥") + quote.MergeProtectionPrice.ToString("0.00");
         return SteamMarket.Cached == null ? "—" : UiLanguage.T("无报价");
     }
 
@@ -2301,7 +2308,7 @@ internal sealed partial class MainForm
         _marketBusy = true;
         _btnMarket.Enabled = false;
         _lblMarketStatus.ForeColor = Muted;
-        _lblMarketStatus.Text = UiLanguage.T("正在查询 Steam 市场报价…");
+        _lblMarketStatus.Text = UiLanguage.T("正在查询 Steam 市场报价与近期成交价…");
         try
         {
             var result = await SteamMarket.FetchAsync(SteamMarket.CurrencyCny,
@@ -2309,15 +2316,17 @@ internal sealed partial class MainForm
             _lblMarketStatus.ForeColor = result.Ok ? Green : Pink;
             _lblMarketStatus.Text = UiLanguage.T(result.Message);
             _log.Write("Steam 市场：" + result.Message);
+            _nextMarketRetryAt = result.Ok ? DateTime.MinValue : DateTime.Now.AddMinutes(5);
             RefreshWarehouse();
             if (result.Ok && _lastFish != null)
             {
                 var matched = _lastFish.Count(f => MarketQuoteFor(f) != null);
-                _log.Write($"Steam 市场：{matched}/{_lastFish.Count} 条鱼匹配到报价。");
+                _log.Write($"Steam 市场：{matched}/{_lastFish.Count} 条鱼匹配到报价；保护价优先使用近期成交中位价，无成交数据时使用最低在售价。");
             }
         }
         catch (Exception ex)
         {
+            _nextMarketRetryAt = DateTime.Now.AddMinutes(5);
             _lblMarketStatus.ForeColor = Pink;
             _lblMarketStatus.Text = UiLanguage.T("查询失败：") + ex.Message;
             _log.Write("Steam 市场查询异常：" + ex.Message);
@@ -2337,7 +2346,7 @@ internal sealed partial class MainForm
         _lblMarketStatus.ForeColor = Muted;
         _lblMarketStatus.Text = cache == null
             ? UiLanguage.T("未查询市场价：点「查询市场价」获取 Steam 参考价。")
-            : UiLanguage.T($"市场价：{cache.TotalItems} 条报价，更新于 {cache.FetchedAt:HH:mm}。");
+            : UiLanguage.T($"市场价：{cache.TotalItems} 条报价，近期成交中位价已查询，更新于 {cache.FetchedAt:HH:mm}。");
     }
 
     private void RefreshWarehouse()
@@ -2391,8 +2400,8 @@ internal sealed partial class MainForm
             1 => source.OrderByDescending(f => f.Stars).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp),
             2 => source.OrderByDescending(f => f.bc).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp),
             3 => source.OrderBy(f => Selection.CooldownRemaining(f) ?? TimeSpan.MaxValue).ThenBy(f => f.sp),
-            4 => source.OrderByDescending(f => MarketQuoteFor(f)?.Lowest ?? 0m).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp),
-            5 => source.OrderBy(f => MarketQuoteFor(f)?.Lowest ?? decimal.MaxValue).ThenBy(f => f.sp),
+            4 => source.OrderByDescending(f => MarketQuoteFor(f)?.MergeProtectionPrice ?? 0m).ThenByDescending(f => f.RarityTier).ThenBy(f => f.sp),
+            5 => source.OrderBy(f => MarketQuoteFor(f)?.MergeProtectionPrice ?? decimal.MaxValue).ThenBy(f => f.sp),
             _ => source.OrderByDescending(f => f.RarityTier).ThenByDescending(f => f.Stars).ThenBy(f => f.sp)
         };
     }

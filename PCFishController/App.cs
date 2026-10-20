@@ -27,8 +27,8 @@ internal sealed class AppSettings
     /// <summary>自动合成总开关。单独控制，不再依赖自动繁育是否开启。</summary>
     public bool AutoMerge { get; set; } = true;
 
-    /// <summary>自动合成是否排除赛季鱼与赛季配方里用到的鱼，留作合成路线材料。</summary>
-    public bool AutoMergeExcludeSeasonal { get; set; } = true;
+    /// <summary>自动合成时，是否保护近期成交中位价高于 1 元的鱼。</summary>
+    public bool AutoMergeProtectMarketPriceAboveOneYuan { get; set; } = true;
 
     /// <summary>
     /// 合成收尾后的安全等待（秒）。

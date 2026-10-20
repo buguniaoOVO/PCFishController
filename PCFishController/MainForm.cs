@@ -48,7 +48,8 @@ private const string ExpectedBridgeVersion = "0.39.0";
     private readonly NumericUpDown _numMergeThreshold = new();
     private readonly NumericUpDown _numMergeSafety = new();
     private readonly CheckBox _chkMerge = new();
-    private readonly CheckBox _chkMergeExcludeSeasonal = new();
+    private readonly CheckBox _chkProtectMarketPrice = new();
+    private readonly ToolTip _mergeProtectionTip = new();
     private readonly CheckBox _chkAutoUpdate = new();
     private readonly Button _btnMergeNow = new();
     private readonly Label _lblMergeStatus = new();
@@ -86,6 +87,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
     private bool _awaitingMerge;
     private DateTime _mergeRequestedAt = DateTime.MinValue;
     private DateTime _nextMergeCheckAt = DateTime.MinValue;
+    private DateTime _nextMarketRetryAt = DateTime.MinValue;
     private List<FishDto> _preMergeSnapshot;
     private readonly BreedRequestTracker _breedRequest = new();
     private DateTime _nextBreedStatusAt = DateTime.MinValue;
@@ -532,10 +534,11 @@ private const string ExpectedBridgeVersion = "0.39.0";
             UpdateMergeStatus();
         };
 
-        _chkMergeExcludeSeasonal.CheckedChanged += (_, _) =>
+        _chkProtectMarketPrice.CheckedChanged += (_, _) =>
         {
-            _settings.AutoMergeExcludeSeasonal = _chkMergeExcludeSeasonal.Checked;
+            _settings.AutoMergeProtectMarketPriceAboveOneYuan = _chkProtectMarketPrice.Checked;
             _settings.Save();
+            if (_chkProtectMarketPrice.Checked) _nextMergeCheckAt = DateTime.Now;
             UpdateMergeStatus();
         };
 
@@ -630,7 +633,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
         _settings.MergeSafetySeconds = (int)_numMergeSafety.Value;
         _settings.AutoMerge = _chkMerge.Checked;
-        _settings.AutoMergeExcludeSeasonal = _chkMergeExcludeSeasonal.Checked;
+        _settings.AutoMergeProtectMarketPriceAboveOneYuan = _chkProtectMarketPrice.Checked;
         _settings.AutoCheckUpdate = _chkAutoUpdate.Checked;
         _settings.Language = UiLanguage.Current;
         _settings.GoalType = _goalTypeCombo?.SelectedValue?.ToString() ?? _settings.GoalType;
@@ -858,7 +861,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         if (_gameBusy)
         {
             reason = "游戏正在处理请求或功能窗口正在使用，稍后再合成。";
-            _nextMergeCheckAt = DateTime.Now.AddSeconds(15);
+            _nextMergeCheckAt = DateTime.Now.AddSeconds(60);
             return false;
         }
         if (_windowLocked) { reason = "窗口自检已锁停动作：" + _windowLockReason; return false; }
@@ -874,14 +877,27 @@ private const string ExpectedBridgeVersion = "0.39.0";
             return false;
         }
 
-        var excluded = _settings.AutoMergeExcludeSeasonal;
-        var reserved = excluded ? Selection.SeasonalReservedTypes() : null;
-        var picks = Selection.PickMergeCandidates(_lastFish, 10, reserved);
+        var market = SteamMarket.Cached;
+        if (_settings.AutoMergeProtectMarketPriceAboveOneYuan && market == null)
+        {
+            if (DateTime.Now < _nextMarketRetryAt)
+            {
+                reason = "Steam 市场价格暂不可用，保护模式下暂停合成并等待重试。";
+                _nextMergeCheckAt = _nextMarketRetryAt;
+                return false;
+            }
+            if (!_marketBusy) _ = RefreshMarketAsync();
+            reason = "正在扫描 Steam 市场近期成交价；扫描完成后再自动合成。";
+            _nextMergeCheckAt = DateTime.Now.AddSeconds(_marketBusy ? 60 : 15);
+            return false;
+        }
+
+        var picks = Selection.PickMergeCandidates(_lastFish, 10, market,
+            _settings.AutoMergeProtectMarketPriceAboveOneYuan);
         if (picks.Count < 10)
         {
-            reason = excluded
-                ? $"仓库 {_lastFish.Count} 条，但可用于合成的鱼不足 10 条（已排除赛季鱼与配方鱼），暂不合成。"
-                : $"仓库 {_lastFish.Count} 条，但可用于合成的鱼不足 10 条，暂不合成。";
+            reason = "没有凑齐 10 条同稀有度、同星级的可合成鱼；已排除赛季鱼" +
+                     (_settings.AutoMergeProtectMarketPriceAboveOneYuan ? "及市场保护价高于 ¥1 的鱼" : "") + "，暂不合成。";
             _nextMergeCheckAt = DateTime.Now.AddSeconds(120);
             return false;
         }
@@ -1190,7 +1206,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
                         _serverInventoryReady = false;
                         _nextCheckAt = DateTime.Now;
                         if (_chkAuto.Checked) _autoResumeAt = DateTime.Now;
-                        _log.Write("迟到回包已核实，自动恢复繁育检查。");
+                        _log.Write("繁育结果已核实，自动恢复繁育检查。");
                     }
                 }
                 if (_roundActive) MaybeBreed(_lastFish);
@@ -1319,6 +1335,21 @@ private const string ExpectedBridgeVersion = "0.39.0";
         else
         {
             var elapsed = (DateTime.Now - _breedRequestedAt).TotalSeconds;
+            if (msg.errorKind == "game_state" && !string.IsNullOrWhiteSpace(msg.id) && _preBreedSnapshot != null)
+            {
+                _pendingNewFishId = msg.id;
+                _recoverAfterBreedVerification = true;
+                _verificationRetries = 0;
+                _serverInventoryReady = false;
+                _actionPauseReason = "繁育回包待核实，正在刷新鱼群";
+                _autoResumeAt = DateTime.MinValue;
+                _roundActive = false;
+                _nextActionAt = DateTime.MinValue;
+                _breedSettleAt = DateTime.Now.AddSeconds(3);
+                SendArm(false);
+                _log.Write($"繁育回包附带结果 ID，原生收尾尚待确认（{elapsed:F1}秒）；已保留本笔记录，3 秒后核对鱼群，核验成功后自动恢复。");
+                return;
+            }
             _log.Write($"繁育请求失败（{elapsed:F1}秒）：{msg.msg}");
             _preBreedSnapshot = null;
             _pendingParentA = _pendingParentB = _pendingNewFishId = null;
@@ -1326,7 +1357,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
             _breedRequest.Clear();
             if (msg.errorKind == "busy" && _roundActive)
             {
-                _nextActionAt = DateTime.Now.AddSeconds(15);
+                _nextActionAt = DateTime.Now.AddSeconds(60);
                 return;
             }
             if (!string.IsNullOrEmpty(msg.errorKind))
@@ -1593,7 +1624,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
             if (!_waitingForGameIdle)
                 _log.Write("游戏正在处理请求或功能窗口正在使用，等待空闲后继续本轮。");
             _waitingForGameIdle = true;
-            _nextActionAt = DateTime.Now.AddSeconds(15);
+            _nextActionAt = DateTime.Now.AddSeconds(60);
             return;
         }
         _waitingForGameIdle = false;
@@ -1653,15 +1684,19 @@ private const string ExpectedBridgeVersion = "0.39.0";
             : UiLanguage.T($"仓库：{total} 条　阈值：{_settings.AutoMergeThreshold} 条　" +
                            (total > _settings.AutoMergeThreshold ? "已超过阈值，可合成" : "未达阈值"));
 
-        var reserved = _settings.AutoMergeExcludeSeasonal ? Selection.SeasonalReservedTypes() : null;
-        var picks = _lastFish == null ? new List<FishDto>() : Selection.PickMergeCandidates(_lastFish, 10, reserved);
+        var picks = _lastFish == null ? new List<FishDto>() : Selection.PickMergeCandidates(_lastFish, 10,
+            SteamMarket.Cached, _settings.AutoMergeProtectMarketPriceAboveOneYuan);
         if (_lastFish == null)
         {
             _lblMergePlan.Text = UiLanguage.T("候选：等待鱼群数据…");
         }
+        else if (_settings.AutoMergeProtectMarketPriceAboveOneYuan && SteamMarket.Cached == null)
+        {
+            _lblMergePlan.Text = UiLanguage.T("候选：等待 Steam 市场成交价扫描…");
+        }
         else if (picks.Count < 10)
         {
-            _lblMergePlan.Text = UiLanguage.T($"候选：{picks.Count}/10 条，凑不满一次合成（需 10 条）");
+            _lblMergePlan.Text = UiLanguage.T("候选：不足 10 条同稀有度、同星级鱼，或市场价保护正在生效。");
         }
         else
         {

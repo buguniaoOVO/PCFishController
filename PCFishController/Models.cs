@@ -140,36 +140,34 @@ internal static class Selection
     internal static bool CanMerge(FishDto f) => f.bc <= 0 && !f.lk && !f.pl;
 
     /// <summary>
-    /// 自动合成候选：排除赛季鱼和赛季配方所需鱼，优先 0 繁育次数、再按稀有度从低到高。
-    /// 赛季鱼要留着做合成路线，任何还在繁殖次数内的鱼优先留给繁育。
+    /// 自动合成按稀有度和星级分组，每次只选满一组；高稀有度优先。
+    /// 赛季鱼始终排除，赛季配方材料可以参与普通合成。
     /// </summary>
-    internal static List<FishDto> PickMergeCandidates(List<FishDto> fish, int count, ISet<string> reservedTypes)
+    internal static List<FishDto> PickMergeCandidates(List<FishDto> fish, int count,
+        MarketLookupResult market, bool protectMarketPrice)
     {
-        if (fish == null) return new List<FishDto>();
-        return fish
-            .Where(f => !f.lk && !f.pl)
+        if (fish == null || count <= 0) return new List<FishDto>();
+
+        var eligible = fish
+            .Where(f => f != null && !f.lk && !f.pl && f.bc <= 0)
             .Where(f => FishCatalog.Find(f.ty)?.Season is not > 0)
-            .Where(f => reservedTypes == null || !reservedTypes.Contains(f.ty ?? ""))
-            .OrderBy(f => f.bc > 0 ? 1 : 0)
-            .ThenBy(f => f.RarityTier)
-            .ThenBy(f => f.Stars)
-            .ThenBy(f => f.bc)
-            .Take(count)
+            .Where(f => !protectMarketPrice || !IsAboveMarketThreshold(f, market))
             .ToList();
+
+        return eligible
+            .GroupBy(f => (Rarity: f.RarityTier, Stars: f.Stars))
+            .Where(group => group.Key.Stars >= 1 && group.Count() >= count)
+            .OrderByDescending(group => group.Key.Rarity)
+            .ThenByDescending(group => group.Key.Stars)
+            .Select(group => group.OrderBy(f => f.bc).Take(count).ToList())
+            .FirstOrDefault() ?? new List<FishDto>();
     }
 
-    /// <summary>赛季配方里出现的所有鱼型，作为自动合成的保护名单。</summary>
-    internal static HashSet<string> SeasonalReservedTypes()
+    private static bool IsAboveMarketThreshold(FishDto fish, MarketLookupResult market)
     {
-        var reserved = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var species in FishCatalog.Species)
-            if (species.Season > 0) reserved.Add(species.Code);
-        foreach (var recipe in WikiDatabase.Data.Recipes)
-        {
-            foreach (var ingredient in recipe.Ingredients)
-                if (!string.IsNullOrWhiteSpace(ingredient.Type)) reserved.Add(ingredient.Type);
-        }
-        return reserved;
+        var name = FishCatalog.EnglishName(fish.ty);
+        var quote = market?.Find(name, fish.Stars);
+        return quote != null && quote.MergeProtectionPrice > 1m;
     }
 
     /// <summary>
