@@ -23,3 +23,7 @@ build-check-*/
 *.bak-*
 *.safe-backup
 *.safe-current-on-disk
+
+# 发布包
+dist-release/
+PCFish-v*.zip
