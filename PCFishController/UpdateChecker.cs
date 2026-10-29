@@ -302,7 +302,7 @@ internal static class UpdateChecker
 
             // 只搬运我们认识的文件；其它内容留在临时目录里，由批处理最后清理。
             var moved = new List<string>();
-            foreach (var name in new[] { "PCFishController.exe", "PCFish助手.exe", "PCFishAutoHelper.dll" })
+            foreach (var name in new[] { "PCFishController.exe", "PCFish助手.exe", "PCFishAutoHelper.dll", "PCFishFrida.exe" })
             {
                 var found = FindFile(extractDir, name);
                 if (found == null) continue;

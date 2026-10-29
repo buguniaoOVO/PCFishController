@@ -12,6 +12,14 @@ internal sealed class AppSettings
 {
     public int Port { get; set; } = 27777;
 
+    /// <summary>
+    /// 连接方式：frida 只用内存连接（默认）；auto 优先 Frida、失败回退插件；plugin 只用旧插件桥接。
+    /// </summary>
+    public string ConnectionMode { get; set; } = "frida";
+
+    /// <summary>Frida worker 的本机端口。只监听 127.0.0.1。</summary>
+    public int FridaPort { get; set; } = 27778;
+
     /// <summary>界面语言，zh 表示简体中文，en 表示 English。</summary>
     public string Language { get; set; } = "zh";
 
@@ -26,9 +34,58 @@ internal sealed class AppSettings
 
     /// <summary>自动合成总开关。单独控制，不再依赖自动繁育是否开启。</summary>
     public bool AutoMerge { get; set; } = true;
+    /// <summary>自动合成优先选择高稀有度鱼组。</summary>
+    public bool AutoMergePreferHighRarity { get; set; } = true;
+    /// <summary>自动合成排序模式：rarity_high/low 或 stars_high/low。</summary>
+    public string AutoMergePriorityMode { get; set; } = "";
 
-    /// <summary>自动合成时，是否保护近期成交中位价高于 1 元的鱼。</summary>
+    /// <summary>自动合成时，是否保护市场价高于设定金额的鱼。</summary>
     public bool AutoMergeProtectMarketPriceAboveOneYuan { get; set; } = true;
+
+    /// <summary>市场价保护金额，单位为人民币元。</summary>
+    public decimal AutoMergeProtectionPriceYuan { get; set; } = 1.00m;
+
+    /// <summary>自动合成排除的赛季编号。当前选项为 S1、S2。</summary>
+    public List<int> AutoMergeExcludedSeasons { get; set; } = new() { 1, 2 };
+
+    /// <summary>自动合成时排除对应赛季配方涉及的鱼种。</summary>
+    public List<int> AutoMergeExcludedRecipeSeasons { get; set; } = new();
+
+    /// <summary>自动合成排除的鱼种代码，例如 FS00028。为空表示不额外排除。</summary>
+    public List<string> AutoMergeExcludedTypes { get; set; } = new();
+
+    /// <summary>
+    /// 赛季鱼材料凑齐就自动合成，无视仓库阈值。
+    /// 赛季配方固定为「核心鱼×1 + 辅助鱼×3×3 = 10 条」，正好填满游戏合成槽。
+    /// 默认关闭：开启后会在鱼群数量不足阈值时也发起合成。
+    /// </summary>
+    public bool AutoMergeSeasonalIgnoreThreshold { get; set; }
+
+
+    /// <summary>定期刷新 Steam 市场报价并写入本地缓存。</summary>
+    public bool AutoMarketRefresh { get; set; } = true;
+    /// <summary>自动刷新和自动导出的间隔，分钟。</summary>
+    public int MarketRefreshIntervalMinutes { get; set; } = 60;
+    /// <summary>允许按价格条件自动导出到 Steam；默认关闭。</summary>
+    public bool AutoSteamExport { get; set; }
+    public decimal AutoSteamExportMinPriceYuan { get; set; }
+    public decimal AutoSteamExportMaxPriceYuan { get; set; } = 100000m;
+    public int AutoSteamExportBatchSize { get; set; } = 10;
+    public List<int> SteamExportExcludedSeasons { get; set; } = new() { 2 };
+    public List<int> SteamExportExcludedRecipeSeasons { get; set; } = new();
+    public List<string> SteamExportExcludedTypes { get; set; } = new();
+
+    /// <summary>合成路线目标筛选赛季，当前只显示 S1、S2。</summary>
+    public int SynthesisSeasonFilter { get; set; } = 1;
+
+    /// <summary>游戏锁帧：0 表示不限制，可选 10 或 30。</summary>
+    public int FrameLimit { get; set; }
+
+    /// <summary>多开管理：当前管理的游戏实例 PID，0 表示自动选第一个。</summary>
+    public int SelectedInstancePid { get; set; }
+
+    /// <summary>实例别名，键是 PID，值是用户起的名字。</summary>
+    public Dictionary<string, string> InstanceNames { get; set; } = new();
 
     /// <summary>
     /// 合成收尾后的安全等待（秒）。
@@ -39,6 +96,10 @@ internal sealed class AppSettings
 
     /// <summary>自动繁育总开关。</summary>
     public bool AutoBreed { get; set; }
+    /// <summary>自动繁育优先选择高稀有度鱼。</summary>
+    public bool AutoBreedPreferHighRarity { get; set; } = true;
+    /// <summary>自动繁育排序模式：rarity_high/low 或 stars_high/low。</summary>
+    public string AutoBreedPriorityMode { get; set; } = "";
 
     /// <summary>
     /// 两次繁育之间的间隔下限（秒）。默认 20 分钟 = 1200 秒。
@@ -88,7 +149,40 @@ internal sealed class AppSettings
             {
                 var json = File.ReadAllText(FilePath, Encoding.UTF8);
                 var s = JsonSerializer.Deserialize<AppSettings>(json);
-                if (s != null) return s;
+                if (s != null)
+                {
+                    s.AutoMergeProtectionPriceYuan = Math.Clamp(s.AutoMergeProtectionPriceYuan, 0m, 100000m);
+                    s.FridaPort = Math.Clamp(s.FridaPort, 1024, 65535);
+                    if (s.ConnectionMode is not ("auto" or "frida" or "plugin")) s.ConnectionMode = "auto";
+                    static List<int> Seasons(IEnumerable<int> values)
+                        => (values ?? Enumerable.Empty<int>()).Where(x => x is 1 or 2).Distinct().OrderBy(x => x).ToList();
+                    static string Priority(string value, bool legacyHigh)
+                        => value is "rarity_high" or "rarity_low" or "stars_high" or "stars_low"
+                            ? value : legacyHigh ? "rarity_high" : "rarity_low";
+
+                    s.AutoMergeExcludedSeasons = Seasons(s.AutoMergeExcludedSeasons);
+                    s.AutoMergeExcludedRecipeSeasons = Seasons(s.AutoMergeExcludedRecipeSeasons);
+                    s.AutoMergeExcludedTypes ??= new List<string>();
+                    s.AutoMergePriorityMode = Priority(s.AutoMergePriorityMode, s.AutoMergePreferHighRarity);
+                    s.AutoMergePreferHighRarity = s.AutoMergePriorityMode == "rarity_high";
+                    s.AutoBreedPriorityMode = Priority(s.AutoBreedPriorityMode, s.AutoBreedPreferHighRarity);
+                    s.AutoBreedPreferHighRarity = s.AutoBreedPriorityMode == "rarity_high";
+                    s.MarketRefreshIntervalMinutes = Math.Clamp(s.MarketRefreshIntervalMinutes, 15, 1440);
+                    s.AutoSteamExportMinPriceYuan = Math.Clamp(s.AutoSteamExportMinPriceYuan, 0m, 100000m);
+                    s.AutoSteamExportMaxPriceYuan = Math.Clamp(s.AutoSteamExportMaxPriceYuan, 0m, 100000m);
+                    if (s.AutoSteamExportMaxPriceYuan < s.AutoSteamExportMinPriceYuan)
+                        (s.AutoSteamExportMinPriceYuan, s.AutoSteamExportMaxPriceYuan) =
+                            (s.AutoSteamExportMaxPriceYuan, s.AutoSteamExportMinPriceYuan);
+                    s.AutoSteamExportBatchSize = Math.Clamp(s.AutoSteamExportBatchSize, 1, 100);
+                    if (s.AutoSteamExport) s.AutoMarketRefresh = true;
+                    s.SteamExportExcludedSeasons = Seasons(s.SteamExportExcludedSeasons);
+                    s.SteamExportExcludedRecipeSeasons = Seasons(s.SteamExportExcludedRecipeSeasons);
+                    s.SteamExportExcludedTypes ??= new List<string>();
+                    if (s.SynthesisSeasonFilter is not (1 or 2)) s.SynthesisSeasonFilter = 1;
+                    s.InstanceNames ??= new Dictionary<string, string>();
+                    if (s.FrameLimit is not (0 or 10 or 30)) s.FrameLimit = 0;
+                    return s;
+                }
             }
         }
         catch
@@ -219,10 +313,17 @@ internal static class GameProcess
 {
     internal const string Name = "PCFish";
 
-    internal static Process Find()
+    internal static Process Find(int preferredPid = 0)
     {
         try
         {
+            if (preferredPid > 0)
+            {
+                var selected = Process.GetProcessById(preferredPid);
+                if (string.Equals(selected.ProcessName, Name, StringComparison.OrdinalIgnoreCase))
+                    return selected;
+                selected.Dispose();
+            }
             var list = Process.GetProcessesByName(Name);
             return list.Length > 0 ? list[0] : null;
         }
@@ -230,6 +331,28 @@ internal static class GameProcess
         {
             return null;
         }
+    }
+
+    internal static IReadOnlyList<GameInstanceInfo> ListInstances()
+    {
+        var rows = new List<GameInstanceInfo>();
+        try
+        {
+            foreach (var process in Process.GetProcessesByName(Name))
+            {
+                try
+                {
+                    process.Refresh();
+                    var title = process.MainWindowTitle;
+                    var path = "";
+                    try { path = process.MainModule?.FileName ?? ""; } catch { }
+                    rows.Add(new GameInstanceInfo(process.Id, title, path));
+                }
+                finally { process.Dispose(); }
+            }
+        }
+        catch { }
+        return rows.OrderBy(x => x.Pid).ToList();
     }
 
     internal static string Describe()
@@ -245,4 +368,10 @@ internal static class GameProcess
             return "运行中";
         }
     }
+}
+
+internal sealed record GameInstanceInfo(int Pid, string WindowTitle, string Path)
+{
+    public override string ToString()
+        => $"PID {Pid}" + (string.IsNullOrWhiteSpace(WindowTitle) ? "" : " · " + WindowTitle);
 }

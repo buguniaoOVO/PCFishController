@@ -29,13 +29,6 @@ internal sealed class GoalPlan
 /// </summary>
 internal static class GoalPlanner
 {
-    private static readonly Dictionary<string, string[]> SeasonalIngredients = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["FS00033"] = new[] { "FS00014", "FS00007", "FS00009", "FS00008" },
-        ["FS00034"] = new[] { "FS00021", "FS00016", "FS00017", "FS00018" },
-        ["FS00035"] = new[] { "FS00027", "FS00020", "FS00023", "FS00022" },
-    };
-
     internal static GoalPlan Build(string targetType, int targetStar,
         IReadOnlyCollection<string> collectedTypes, IReadOnlyList<FishDto> fish)
     {
@@ -53,17 +46,29 @@ internal static class GoalPlanner
         route.Add(targetType);
         var target = FishCatalog.Find(targetType);
         lines.Add($"最终目标：{target.Name} {StarText(targetStar)}（{FishCatalog.RarityName(target.Tier)}）");
-        SeasonalIngredients.TryGetValue(targetType, out var ingredients);
-        var exact = target.Season == 1 && ingredients != null;
+        var recipe = WikiDatabase.FindRecipe(targetType);
+        var exact = target.Season > 0 && recipe != null;
         if (exact)
         {
-            lines.Add("赛季配方：每个星级都需要以下 4 种材料各 3 条；再加上一条同鱼种的上一星级鱼（1 星不需要）。");
+            lines.Add($"S{recipe.Season} 赛季配方：按游戏资源中的材料鱼和星级逐级规划。");
             for (var star = 1; star <= targetStar; star++)
             {
-                var parts = ingredients.Select(type => $"{FishCatalog.Name(type)} {StarText(star)} ×3").ToList();
-                if (star > 1) parts.Insert(0, $"{target.Name} {StarText(star - 1)} ×1");
+                var parts = new List<string>();
+                if (star > 1 && recipe.PreviousTargetReplacesCore)
+                    parts.Add($"{target.Name} {StarText(star - 1)} ×1");
+                foreach (var ingredient in recipe.Ingredients ?? new List<WikiIngredient>())
+                {
+                    if (star > 1 && recipe.PreviousTargetReplacesCore &&
+                        string.Equals(ingredient.Role, "核心鱼", StringComparison.OrdinalIgnoreCase))
+                        continue;
+                    var ingredientStar = string.Equals(ingredient.Role, "核心鱼", StringComparison.OrdinalIgnoreCase) ||
+                                         !recipe.RepeatSupportAtTargetStar
+                        ? ingredient.Star : star;
+                    parts.Add($"{FishCatalog.Name(ingredient.Type)} {StarText(ingredientStar)} ×{ingredient.Count}");
+                }
                 lines.Add($"第 {star} 星：" + string.Join(" + ", parts));
-                foreach (var type in ingredients) route.Add(type);
+                foreach (var ingredient in recipe.Ingredients ?? new List<WikiIngredient>())
+                    route.Add(ingredient.Type);
             }
         }
         else

@@ -8,7 +8,7 @@
     <Nullable>disable</Nullable>
     <AssemblyName>PCFishController</AssemblyName>
     <RootNamespace>PCFishController</RootNamespace>
-    <Version>0.39.1</Version>
+    <Version>0.39.2</Version>
     <ApplicationIcon>pcfish-terry.ico</ApplicationIcon>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
@@ -19,5 +19,14 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="Assets\fish-icons.png" Link="fish-icons.png"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\fish-icons.json" Link="fish-icons.json"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="Assets\seasonal-recipes.json" Link="seasonal-recipes.json"
+             CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 
 </Project>

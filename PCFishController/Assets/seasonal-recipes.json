@@ -1,0 +1,52 @@
+{
+  "SchemaVersion": 1,
+  "Source": "PCFish_Data/resources.assets: fish_type_v1.5 and fish_season_recipe_v1.1",
+  "Fish": [
+    { "Code": "FS00036", "Name": "怨灵金鱼", "Tier": 3, "Season": 0 },
+    { "Code": "FS00037", "Name": "血月噬梦翻车鱼", "Tier": 4, "Season": 0 },
+    { "Code": "FS00038", "Name": "南瓜鬼灯鮟鱇鱼", "Tier": 3, "Season": 2 },
+    { "Code": "FS00039", "Name": "缝合怪鱼", "Tier": 4, "Season": 2 },
+    { "Code": "FS00040", "Name": "鬼火灯笼水母", "Tier": 5, "Season": 2 },
+    { "Code": "FS00041", "Name": "霜刃", "Tier": 1, "Season": 0 },
+    { "Code": "FS00042", "Name": "旭日旋纹", "Tier": 2, "Season": 0 },
+    { "Code": "FS00043", "Name": "像素鲈", "Tier": 3, "Season": 0 }
+  ],
+  "Recipes": [
+    {
+      "Target": "FS00038",
+      "Season": 2,
+      "RepeatSupportAtTargetStar": true,
+      "PreviousTargetReplacesCore": true,
+      "Ingredients": [
+        { "Type": "FS00013", "Star": 1, "Count": 1, "Role": "核心鱼" },
+        { "Type": "FS00001", "Star": 1, "Count": 3, "Role": "辅助鱼" },
+        { "Type": "FS00002", "Star": 1, "Count": 3, "Role": "辅助鱼" },
+        { "Type": "FS00005", "Star": 1, "Count": 3, "Role": "辅助鱼" }
+      ]
+    },
+    {
+      "Target": "FS00039",
+      "Season": 2,
+      "RepeatSupportAtTargetStar": true,
+      "PreviousTargetReplacesCore": true,
+      "Ingredients": [
+        { "Type": "FS00031", "Star": 1, "Count": 1, "Role": "核心鱼" },
+        { "Type": "FS00010", "Star": 1, "Count": 3, "Role": "辅助鱼" },
+        { "Type": "FS00011", "Star": 1, "Count": 3, "Role": "辅助鱼" },
+        { "Type": "FS00015", "Star": 1, "Count": 3, "Role": "辅助鱼" }
+      ]
+    },
+    {
+      "Target": "FS00040",
+      "Season": 2,
+      "RepeatSupportAtTargetStar": true,
+      "PreviousTargetReplacesCore": true,
+      "Ingredients": [
+        { "Type": "FS00026", "Star": 1, "Count": 1, "Role": "核心鱼" },
+        { "Type": "FS00019", "Star": 1, "Count": 3, "Role": "辅助鱼" },
+        { "Type": "FS00021", "Star": 1, "Count": 3, "Role": "辅助鱼" },
+        { "Type": "FS00024", "Star": 1, "Count": 3, "Role": "辅助鱼" }
+      ]
+    }
+  ]
+}

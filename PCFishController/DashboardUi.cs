@@ -29,8 +29,9 @@ internal sealed partial class MainForm
     private readonly Label _lblPageSubtitle = new();
     private readonly Label _lblHeaderConnection = new();
     private readonly Label _lblRunState = new();
+    private readonly Label _lblArmHint = new();
     private Button _btnRecheck;
-    private Button _btnStartAll, _btnStopAll;
+    private Button _btnStartAll, _btnStopAll, _btnGameWindow, _btnExit;
     private readonly Label _lblOverviewFish = new();
     private readonly Label _lblOverviewReady = new();
     private readonly Label _lblOverviewHeart = new();
@@ -56,6 +57,7 @@ internal sealed partial class MainForm
     private readonly RichTextBox _txtCollectionList = new();
     private bool _updatingGoalOptions;
     private readonly ComboBox _synthesisTargetCombo = new();
+    private bool _updatingSynthesisTargets;
     private readonly HashSet<string> _craftableSeasonalTypes = new(StringComparer.OrdinalIgnoreCase);
     private readonly ComboBox _synthesisStarCombo = new();
     private readonly Label _lblSynthesisTarget = new();
@@ -64,6 +66,18 @@ internal sealed partial class MainForm
     private readonly Label _lblSynthesisUpdated = new();
     private readonly DataGridView _synthesisGrid = new();
     private readonly ComboBox _languageCombo = new();
+    private readonly ComboBox _connectionModeCombo = new();
+    private readonly ComboBox _frameLimitCombo = new();
+    private readonly ComboBox _cmbBreedRarityPriority = new();
+    private readonly ComboBox _cmbMergeRarityPriority = new();
+    private readonly FlowLayoutPanel _mergeSeasonFilters = new();
+    private readonly Dictionary<int, CheckBox> _mergeSeasonChecks = new();
+    private readonly FlowLayoutPanel _mergeRecipeSeasonFilters = new();
+    private readonly Dictionary<int, CheckBox> _mergeRecipeSeasonChecks = new();
+    private readonly ComboBox _synthesisSeasonCombo = new();
+    private readonly Button _marketAutomationButton = new();
+    private DateTime _nextAutoMarketRefreshAt = DateTime.MinValue;
+    private DateTime _nextAutoExportAt = DateTime.MinValue;
     private readonly ComboBox _closeBehaviorCombo = new();
     private readonly TextBox _commandBox = new();
     private readonly Label _commandStatus = new();
@@ -191,7 +205,7 @@ internal sealed partial class MainForm
         _lblHeaderConnection.TextAlign = ContentAlignment.MiddleCenter;
         _lblHeaderConnection.ForeColor = Muted;
         _lblHeaderConnection.BackColor = Card;
-        _lblHeaderConnection.Size = new Size(112, 34);
+        _lblHeaderConnection.Size = new Size(150, 34);
         _lblHeaderConnection.Margin = new Padding(0, 0, 8, 0);
         _lblRunState.Size = new Size(112, 34);
         _lblRunState.TextAlign = ContentAlignment.MiddleCenter;
@@ -206,9 +220,19 @@ internal sealed partial class MainForm
         _btnStopAll.Size = new Size(110, 34);
         _btnStopAll.Margin = Padding.Empty;
         _btnStopAll.Click += (_, _) => StopAllAutomation();
+        _btnGameWindow = ActionButton("隐藏游戏窗口", Color.FromArgb(232, 238, 247));
+        _btnGameWindow.Size = new Size(100, 34);
+        _btnGameWindow.Margin = new Padding(4, 0, 0, 0);
+        _btnGameWindow.Click += (_, _) => ToggleGameWindow();
+        _btnExit = ActionButton("退出", Color.FromArgb(255, 232, 234));
+        _btnExit.Size = new Size(72, 34);
+        _btnExit.Margin = new Padding(8, 0, 0, 0);
+        _btnExit.ForeColor = Color.FromArgb(160, 45, 52);
+        _btnExit.AccessibleName = UiLanguage.T("退出助手");
+        _btnExit.Click += (_, _) => ExitAssistant();
         var runControls = new FlowLayoutPanel
         {
-            Size = new Size(478, 36), WrapContents = false, BackColor = Color.Transparent,
+            Size = new Size(760, 36), WrapContents = false, BackColor = Color.Transparent,
             FlowDirection = FlowDirection.LeftToRight, Margin = Padding.Empty
         };
         _btnRecheck = ActionButton("重新检测", Color.FromArgb(232, 238, 247));
@@ -219,11 +243,11 @@ internal sealed partial class MainForm
         _btnRecheck.Visible = false;
         runControls.Controls.AddRange(new Control[]
         {
-            _lblRunState, _btnRecheck, _lblHeaderConnection, _btnStartAll, _btnStopAll
+            _lblRunState, _btnRecheck, _lblHeaderConnection, _btnStartAll, _btnStopAll, _btnGameWindow, _btnExit
         });
         void PlaceRunControls()
         {
-            var compact = header.ClientSize.Width < 800;
+            var compact = header.ClientSize.Width < 960;
             header.Height = compact ? 132 : 102;
             runControls.Location = new Point(Math.Max(0, header.ClientSize.Width - runControls.Width), compact ? 82 : 27);
             _lblPageTitle.Width = compact ? 360 : Math.Max(180, runControls.Left - 16);
@@ -474,9 +498,9 @@ internal sealed partial class MainForm
         var heading = key switch
         {
             "breeding" => ("自动繁育", "控制检查周期和繁育条件"),
-            "merge" => ("自动合成", "仓库超过阈值时自动合并，排除赛季鱼与配方鱼"),
+            "merge" => ("自动合成", "仓库超过阈值时按稀有度或星级顺序合成，并使用赛季、配方和价格排除规则"),
             "warehouse" => ("仓库", "查看鱼群、繁育次数与冷却时间"),
-            "synthesis" => ("合成路线", "根据 Wiki 配方查看材料状态并设置繁育目标"),
+            "synthesis" => ("合成路线", "按 S1 或 S2 筛选目标鱼并查看每个星级的配方材料"),
             "collection" => ("图鉴 / 目标", "查看已发现鱼种，设置最终目标和繁育路线"),
             "logs" => ("日志", "查看助手和游戏桥接的运行记录"),
             "settings" => ("设置", "管理助手语言、窗口行为和命令"),
@@ -681,11 +705,20 @@ internal sealed partial class MainForm
         _numMinGrade.Maximum = 6;
         _numMinGrade.Value = Math.Clamp(_settings.MinGrade, 0, 6);
         StyleNumber(_numMinGrade);
-        var hint = Label("每次检查会使用现有繁育计数器，优先选择目标路线、高稀有度且已结束冷却的鱼。", 9, false, Muted);
+        var breedPriorityTitle = Label("繁育优先级", 9, false, Muted);
+        breedPriorityTitle.SetBounds(470, 110, 155, 25);
+        _cmbBreedRarityPriority.SetBounds(470, 143, 180, 30);
+        _cmbBreedRarityPriority.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbBreedRarityPriority.FlatStyle = FlatStyle.Flat;
+        _cmbBreedRarityPriority.BackColor = InputBg;
+        _cmbBreedRarityPriority.ForeColor = White;
+        _cmbBreedRarityPriority.Items.AddRange(new object[] { "高稀有度优先", "低稀有度优先", "高星级优先", "低星级优先" });
+        _cmbBreedRarityPriority.SelectedIndex = PriorityModeIndex(_settings.AutoBreedPriorityMode);
+        var hint = Label("自动繁育按图鉴目标和所选稀有度/星级顺序选鱼；最低稀有度仍作为筛选门槛。", 9, false, Muted);
         hint.SetBounds(22, 188, 700, 24);
         var hint2 = Label("合成相关的阈值和等待时间已移到「自动合成」页面。", 9, false, Muted);
         hint2.SetBounds(22, 212, 700, 24);
-        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, hint, hint2 });
+        settings.Controls.AddRange(new Control[] { heading, _chkAuto, _chkAutoUpgrade, intervalTitle, _numIvMin, separator, _numIvMax, gradeTitle, _numMinGrade, breedPriorityTitle, _cmbBreedRarityPriority, hint, hint2 });
 
         var manual = Surface();
         manual.Dock = DockStyle.Top;
@@ -697,11 +730,15 @@ internal sealed partial class MainForm
         _btnHud.Text = "查询计数器状态";
         StyleAction(_btnArm);
         StyleAction(_btnHud);
+        _btnArm.Visible = _client.RequiresArm;
         _btnArm.SetBounds(22, 60, 175, 40);
         _btnHud.SetBounds(212, 60, 175, 40);
-        var manualHint = Label("动作需游戏内放行，并与桥接保持连接。", 9, false, Muted);
-        manualHint.SetBounds(22, 115, 550, 28);
-        manual.Controls.AddRange(new Control[] { manualTitle, _btnArm, _btnHud, manualHint });
+        _lblArmHint.Text = UiLanguage.T(_client.RequiresArm
+            ? "动作需游戏内放行、连接插件桥接，并点击 ARM。"
+            : "Frida 连接自动放行动作；自动繁育/合成开关直接控制任务，无需额外 ARM。");
+        _lblArmHint.SetBounds(22, 115, 700, 28);
+        _lblArmHint.ForeColor = Muted;
+        manual.Controls.AddRange(new Control[] { manualTitle, _btnArm, _btnHud, _lblArmHint });
 
         var status = Surface();
         status.Dock = DockStyle.Top;
@@ -785,23 +822,125 @@ internal sealed partial class MainForm
 
         var settings = Surface();
         settings.Dock = DockStyle.Top;
-        settings.Height = 232;
+        settings.Height = 306;
         var heading = Label("自动运行", 12, true);
         heading.SetBounds(20, 15, 300, 32);
         _chkMerge.SetBounds(22, 58, 170, 36);
         _chkMerge.Text = "自动合成";
         _chkMerge.Checked = _settings.AutoMerge;
         StyleCheck(_chkMerge);
-        _chkProtectMarketPrice.SetBounds(205, 58, 360, 36);
-        _chkProtectMarketPrice.Text = "保护成交价高于 ¥1 的鱼";
+        _chkProtectMarketPrice.SetBounds(205, 58, 240, 36);
+        _chkProtectMarketPrice.Text = "保护成交价高于指定价的鱼";
         _chkProtectMarketPrice.Checked = _settings.AutoMergeProtectMarketPriceAboveOneYuan;
         StyleCheck(_chkProtectMarketPrice);
         _mergeProtectionTip.SetToolTip(_chkProtectMarketPrice,
-            UiLanguage.T("按 Steam 近期成交中位价保护；无成交数据时使用最低在售价。关闭后不按市场价筛鱼。赛季鱼始终跳过。"));
+            UiLanguage.T("按 Steam 近期成交中位价判断；无成交数据时使用最低在售价。超过设置的人民币金额时不参与合成。季节鱼和配方材料按勾选规则排除。"));
+        _chkSeasonalIgnoreThreshold.SetBounds(22, 205, 620, 30);
+        _chkSeasonalIgnoreThreshold.Text = "赛季鱼材料齐了就合成（无视仓库阈值）";
+        _chkSeasonalIgnoreThreshold.Checked = _settings.AutoMergeSeasonalIgnoreThreshold;
+        StyleCheck(_chkSeasonalIgnoreThreshold);
+        _mergeProtectionTip.SetToolTip(_chkSeasonalIgnoreThreshold,
+            UiLanguage.T("赛季配方固定为核心鱼×1 + 辅助鱼×3×3 = 10 条，正好填满合成槽。勾选后材料凑齐即发起合成，不再看仓库数量阈值。"));
+
+        var protectionCurrency = Label("¥", 9, false, Muted);
+        protectionCurrency.SetBounds(450, 61, 20, 30);
+        _numMergeProtectionPrice.SetBounds(472, 61, 100, 30);
+        _numMergeProtectionPrice.Minimum = 0m;
+        _numMergeProtectionPrice.Maximum = 100000m;
+        _numMergeProtectionPrice.DecimalPlaces = 2;
+        _numMergeProtectionPrice.Increment = 0.01m;
+        _numMergeProtectionPrice.ThousandsSeparator = true;
+        _numMergeProtectionPrice.Value = Math.Clamp(_settings.AutoMergeProtectionPriceYuan, 0m, 100000m);
+        StyleNumber(_numMergeProtectionPrice);
+        _mergeProtectionTip.SetToolTip(_numMergeProtectionPrice,
+            UiLanguage.T("按 Steam 近期成交中位价判断；无成交数据时使用最低在售价。超过设置的人民币金额时不参与合成。季节鱼和配方材料按勾选规则排除。"));
+
+        var excludeFish = ActionButton("选择排除鱼…");
+        excludeFish.SetBounds(592, 59, 132, 34);
+        excludeFish.Click += (_, _) => ConfigureMergeExclusions();
+
+        var seasonTitle = Label("排除赛季：", 9, false, Muted);
+        seasonTitle.SetBounds(22, 104, 92, 25);
+        _mergeSeasonFilters.SetBounds(112, 101, 730, 32);
+        _mergeSeasonFilters.FlowDirection = FlowDirection.LeftToRight;
+        _mergeSeasonFilters.WrapContents = false;
+        _mergeSeasonFilters.AutoScroll = true;
+        _mergeSeasonFilters.Margin = Padding.Empty;
+        _mergeSeasonFilters.Padding = Padding.Empty;
+        _mergeSeasonFilters.BackColor = Color.Transparent;
+        _mergeSeasonFilters.Controls.Clear();
+        _mergeSeasonChecks.Clear();
+        // The current game resource contains S1 and S2; show these two season controls.
+        var knownSeasons = new[] { 1, 2 };
+        foreach (var season in knownSeasons)
+        {
+            var check = new CheckBox
+            {
+                Text = UiLanguage.T($"S{season} 鱼"),
+                AutoSize = true,
+                Checked = _settings.AutoMergeExcludedSeasons.Contains(season),
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 4, 18, 0),
+                Cursor = Cursors.Hand
+            };
+            check.CheckedChanged += (_, _) =>
+            {
+                _settings.AutoMergeExcludedSeasons ??= new List<int>();
+                if (check.Checked)
+                {
+                    if (!_settings.AutoMergeExcludedSeasons.Contains(season))
+                        _settings.AutoMergeExcludedSeasons.Add(season);
+                }
+                else _settings.AutoMergeExcludedSeasons.Remove(season);
+                _settings.Save();
+                UpdateMergeStatus();
+            };
+            _mergeSeasonChecks[season] = check;
+            _mergeSeasonFilters.Controls.Add(check);
+        }
+
+        var recipeSeasonTitle = Label("排除配方鱼：", 9, false, Muted);
+        recipeSeasonTitle.SetBounds(22, 139, 92, 25);
+        _mergeRecipeSeasonFilters.SetBounds(112, 136, 500, 30);
+        _mergeRecipeSeasonFilters.FlowDirection = FlowDirection.LeftToRight;
+        _mergeRecipeSeasonFilters.WrapContents = false;
+        _mergeRecipeSeasonFilters.Margin = Padding.Empty;
+        _mergeRecipeSeasonFilters.Padding = Padding.Empty;
+        _mergeRecipeSeasonFilters.BackColor = Color.Transparent;
+        _mergeRecipeSeasonFilters.Controls.Clear();
+        _mergeRecipeSeasonChecks.Clear();
+        foreach (var season in new[] { 1, 2 })
+        {
+            var check = new CheckBox
+            {
+                Text = UiLanguage.T($"S{season} 配方鱼"),
+                AutoSize = true,
+                Checked = _settings.AutoMergeExcludedRecipeSeasons.Contains(season),
+                ForeColor = Muted,
+                BackColor = Color.Transparent,
+                Margin = new Padding(0, 3, 18, 0),
+                Cursor = Cursors.Hand
+            };
+            check.CheckedChanged += (_, _) =>
+            {
+                _settings.AutoMergeExcludedRecipeSeasons ??= new List<int>();
+                if (check.Checked)
+                {
+                    if (!_settings.AutoMergeExcludedRecipeSeasons.Contains(season))
+                        _settings.AutoMergeExcludedRecipeSeasons.Add(season);
+                }
+                else _settings.AutoMergeExcludedRecipeSeasons.Remove(season);
+                _settings.Save();
+                UpdateMergeStatus();
+            };
+            _mergeRecipeSeasonChecks[season] = check;
+            _mergeRecipeSeasonFilters.Controls.Add(check);
+        }
 
         var thresholdTitle = Label("触发阈值（仓库鱼数）", 9, false, Muted);
-        thresholdTitle.SetBounds(22, 110, 190, 25);
-        _numMergeThreshold.SetBounds(22, 143, 90, 30);
+        thresholdTitle.SetBounds(22, 178, 190, 25);
+        _numMergeThreshold.SetBounds(22, 205, 90, 30);
         _numMergeThreshold.Minimum = 0;
         _numMergeThreshold.Maximum = 5000;
         _numMergeThreshold.Increment = 50;
@@ -809,21 +948,34 @@ internal sealed partial class MainForm
         StyleNumber(_numMergeThreshold);
 
         var safetyTitle = Label("合成后安全等待（秒）", 9, false, Muted);
-        safetyTitle.SetBounds(240, 110, 210, 25);
-        _numMergeSafety.SetBounds(240, 143, 90, 30);
+        safetyTitle.SetBounds(240, 178, 210, 25);
+        _numMergeSafety.SetBounds(240, 205, 90, 30);
         _numMergeSafety.Minimum = 1;
         _numMergeSafety.Maximum = 60;
         _numMergeSafety.Increment = 1;
         _numMergeSafety.Value = Math.Clamp(_settings.MergeSafetySeconds, 1, 60);
         StyleNumber(_numMergeSafety);
 
-        var ruleHint = Label("每次选择 10 条同稀有度、同星级鱼；优先高稀有度，赛季鱼始终跳过。", 9, false, Muted);
-        ruleHint.SetBounds(22, 192, 700, 24);
+        var mergePriorityTitle = Label("合成优先级", 9, false, Muted);
+        mergePriorityTitle.SetBounds(460, 178, 155, 25);
+        _cmbMergeRarityPriority.SetBounds(460, 205, 180, 30);
+        _cmbMergeRarityPriority.DropDownStyle = ComboBoxStyle.DropDownList;
+        _cmbMergeRarityPriority.FlatStyle = FlatStyle.Flat;
+        _cmbMergeRarityPriority.BackColor = InputBg;
+        _cmbMergeRarityPriority.ForeColor = White;
+        _cmbMergeRarityPriority.Items.AddRange(new object[] { "高稀有度优先", "低稀有度优先", "高星级优先", "低星级优先" });
+        _cmbMergeRarityPriority.SelectedIndex = PriorityModeIndex(_settings.AutoMergePriorityMode);
+
+        var ruleHint = Label("每次选择 10 条同稀有度、同星级鱼；季节鱼和配方材料按勾选规则排除。", 9, false, Muted);
+        ruleHint.SetBounds(22, 254, 820, 24);
 
         settings.Controls.AddRange(new Control[]
         {
-            heading, _chkMerge, _chkProtectMarketPrice, thresholdTitle, _numMergeThreshold,
-            safetyTitle, _numMergeSafety, ruleHint
+            heading, _chkMerge, _chkProtectMarketPrice, protectionCurrency, _numMergeProtectionPrice, excludeFish,
+            _chkSeasonalIgnoreThreshold,
+            seasonTitle, _mergeSeasonFilters, recipeSeasonTitle, _mergeRecipeSeasonFilters,
+            thresholdTitle, _numMergeThreshold,
+            safetyTitle, _numMergeSafety, mergePriorityTitle, _cmbMergeRarityPriority, ruleHint
         });
 
         var manual = Surface();
@@ -862,13 +1014,61 @@ internal sealed partial class MainForm
         page.Controls.Add(settings);
     }
 
+    private void ConfigureMergeExclusions()
+    {
+        using var dialog = new ExclusionDialog(BuildFishExclusionItems(),
+            new HashSet<string>(_settings.AutoMergeExcludedTypes ?? new List<string>(), StringComparer.OrdinalIgnoreCase));
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        _settings.AutoMergeExcludedTypes = dialog.SelectedTypes
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _settings.Save();
+        _log.Write($"自动合成排除鱼已保存：{_settings.AutoMergeExcludedTypes.Count} 种。");
+        UpdateMergeStatus();
+    }
+
+    private List<ExclusionDialog.ExclusionItem> BuildFishExclusionItems()
+    {
+        var stock = (_lastFish ?? new List<FishDto>())
+            .Where(f => f != null && !string.IsNullOrWhiteSpace(f.ty))
+            .GroupBy(f => f.ty, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+
+        var items = FishCatalog.Species.Select(species =>
+        {
+            stock.TryGetValue(species.Code, out var owned);
+            var representative = owned?.OrderByDescending(f => f.Stars).FirstOrDefault();
+            var star = representative?.Stars is >= 1 and <= 5 ? representative.Stars : 1;
+            var icon = representative != null ? FishIcon(representative) : FishIconPack.GetForType(species.Code, star);
+            var quoteFish = representative ?? new FishDto
+            {
+                ty = species.Code,
+                sp = $"{species.Code}_{Math.Clamp(species.Tier, 0, 5):D2}_{star:D2}_01",
+                stars = star,
+                tier = species.Tier
+            };
+            return new ExclusionDialog.ExclusionItem
+            {
+                Type = species.Code,
+                Name = species.DisplayName,
+                Rarity = species.Tier,
+                Stars = star,
+                Count = owned?.Count ?? 0,
+                Icon = icon,
+                Price = MarketPriceText(quoteFish)
+            };
+        }).ToList();
+        return items;
+    }
+
     private void BuildWarehouse(Panel body)
     {
         var page = new Panel();
         AddPage(body, "warehouse", page);
         var toolbar = Surface();
         toolbar.Dock = DockStyle.Top;
-        toolbar.Height = 100;
+        toolbar.Height = 172;
         var header = Label("我的鱼", 12, true);
         header.SetBounds(18, 8, 180, 32);
         _lblWarehouseCount.SetBounds(175, 9, 210, 30);
@@ -908,6 +1108,20 @@ internal sealed partial class MainForm
         _btnMarket.Font = new Font("Microsoft YaHei UI", 8F);
         _btnMarket.FlatAppearance.BorderSize = 0;
         _btnMarket.Click += async (_, _) => await RefreshMarketAsync();
+        _marketAutomationButton.Text = UiLanguage.T("自动报价/导出设置");
+        _marketAutomationButton.SetBounds(780, 50, 158, 32);
+        _marketAutomationButton.Font = new Font("Microsoft YaHei UI", 8F);
+        StyleAction(_marketAutomationButton, Color.FromArgb(78, 91, 117));
+        _marketAutomationButton.Click += (_, _) => ConfigureMarketAutomation();
+        var exportFish = ActionButton("导出至 Steam");
+        exportFish.SetBounds(18, 92, 130, 32);
+        exportFish.Font = new Font("Microsoft YaHei UI", 8F, FontStyle.Bold);
+        exportFish.BackColor = Color.FromArgb(120, 88, 205);
+        exportFish.ForeColor = Color.White;
+        exportFish.FlatAppearance.BorderSize = 0;
+        exportFish.Click += async (_, _) => await ExportFishByPriceRangeAsync();
+        var exportHint = Label("按市场价选鱼，确认后由游戏导出到 Steam Inventory。", 8, false, Muted);
+        exportHint.SetBounds(160, 93, 620, 28);
         _warehouseSearch.TextChanged += (_, _) => RefreshWarehouse();
         _warehouseFilter.SelectedIndexChanged += (_, _) => RefreshWarehouse();
         _warehouseSort.SelectedIndexChanged += (_, _) =>
@@ -917,7 +1131,7 @@ internal sealed partial class MainForm
         toolbar.Controls.AddRange(new Control[]
         {
             header, _lblWarehouseCount, _lblMarketStatus, _warehouseSearch, _warehouseFilter,
-            _warehouseSort, refresh, _btnMarket
+            _warehouseSort, refresh, _btnMarket, _marketAutomationButton, exportFish, exportHint
         });
 
         // 卡片网格：自动换行，滚动条在右边。
@@ -937,12 +1151,21 @@ internal sealed partial class MainForm
 
         var toolbar = Surface();
         toolbar.Dock = DockStyle.Top;
-        toolbar.Height = 142;
-        var title = Label("Wiki 合成路线", 12, true);
+        toolbar.Height = 176;
+        var title = Label("赛季合成路线", 12, true);
         title.SetBounds(18, 10, 220, 30);
+        var seasonLabel = Label("赛季", 9, false, Muted);
+        seasonLabel.SetBounds(18, 53, 54, 28);
+        _synthesisSeasonCombo.SetBounds(70, 52, 100, 32);
+        _synthesisSeasonCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _synthesisSeasonCombo.FlatStyle = FlatStyle.Flat;
+        _synthesisSeasonCombo.BackColor = InputBg;
+        _synthesisSeasonCombo.ForeColor = White;
+        _synthesisSeasonCombo.Items.AddRange(new object[] { "S1 赛季", "S2 赛季" });
+        _synthesisSeasonCombo.SelectedIndex = Math.Clamp(_settings.SynthesisSeasonFilter - 1, 0, 1);
         var targetLabel = Label("路线目标", 9, false, Muted);
-        targetLabel.SetBounds(18, 53, 70, 28);
-        _synthesisTargetCombo.SetBounds(88, 52, 245, 32);
+        targetLabel.SetBounds(184, 53, 70, 28);
+        _synthesisTargetCombo.SetBounds(252, 52, 225, 32);
         _synthesisTargetCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _synthesisTargetCombo.FlatStyle = FlatStyle.Flat;
         _synthesisTargetCombo.BackColor = InputBg;
@@ -953,7 +1176,8 @@ internal sealed partial class MainForm
         _synthesisTargetCombo.DrawItem += DrawSynthesisTarget;
         _synthesisTargetCombo.DisplayMember = "DisplayName";
         _synthesisTargetCombo.ValueMember = "Code";
-        var seasonalTargets = FishCatalog.Species.Where(x => x.Season > 0).ToList();
+        var selectedSeason = _settings.SynthesisSeasonFilter is 1 or 2 ? _settings.SynthesisSeasonFilter : 1;
+        var seasonalTargets = FishCatalog.Species.Where(x => x.Season == selectedSeason).OrderBy(x => x.Code).ToList();
         _synthesisTargetCombo.DataSource = seasonalTargets;
         _synthesisType = seasonalTargets.Any(x => string.Equals(x.Code, _settings.GoalType, StringComparison.OrdinalIgnoreCase))
             ? _settings.GoalType
@@ -962,8 +1186,8 @@ internal sealed partial class MainForm
             _synthesisTargetCombo.SelectedValue = _synthesisType;
 
         var starLabel = Label("星级", 9, false, Muted);
-        starLabel.SetBounds(350, 53, 42, 28);
-        _synthesisStarCombo.SetBounds(392, 52, 105, 32);
+        starLabel.SetBounds(488, 53, 42, 28);
+        _synthesisStarCombo.SetBounds(528, 52, 105, 32);
         _synthesisStarCombo.DropDownStyle = ComboBoxStyle.DropDownList;
         _synthesisStarCombo.FlatStyle = FlatStyle.Flat;
         _synthesisStarCombo.BackColor = InputBg;
@@ -972,43 +1196,44 @@ internal sealed partial class MainForm
         _synthesisStarCombo.SelectedIndex = Math.Clamp(_settings.GoalStar - 1, 0, 4);
 
         var setGoal = ActionButton("设为繁育目标", Gold);
-        setGoal.SetBounds(515, 50, 145, 36);
+        setGoal.SetBounds(644, 50, 142, 36);
         setGoal.Click += (_, _) => SetSynthesisGoal(_synthesisType, _synthesisStar, true);
         var refreshRoute = ActionButton("刷新仓库状态", Blue);
-        refreshRoute.SetBounds(665, 50, 125, 36);
+        refreshRoute.SetBounds(796, 50, 128, 36);
         refreshRoute.Click += (_, _) => RequestState();
         var refreshWiki = ActionButton("刷新 Wiki 数据", Color.FromArgb(120, 88, 205));
-        refreshWiki.SetBounds(800, 50, 135, 36);
+        refreshWiki.SetBounds(18, 91, 135, 32);
         refreshWiki.Click += async (_, _) => await RefreshWikiDatabaseAsync();
-        _lblSynthesisTarget.SetBounds(18, 90, 270, 24);
+        _lblSynthesisTarget.SetBounds(165, 94, 270, 24);
         _lblSynthesisTarget.AutoEllipsis = true;
         _lblSynthesisTarget.ForeColor = White;
         _lblSynthesisStatus.SetBounds(245, 12, 150, 28);
         _lblSynthesisStatus.TextAlign = ContentAlignment.MiddleCenter;
         _lblSynthesisStatus.Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Bold);
-        _lblSynthesisSource.SetBounds(300, 90, 610, 24);
+        _lblSynthesisSource.SetBounds(445, 94, 470, 24);
         _lblSynthesisSource.ForeColor = Muted;
-        _lblSynthesisUpdated.SetBounds(576, 113, 330, 20);
+        _lblSynthesisUpdated.SetBounds(576, 144, 330, 20);
         _lblSynthesisUpdated.ForeColor = Muted;
         _lblSynthesisUpdated.Font = new Font("Microsoft YaHei UI", 8F);
         var missingLegend = LegendBadge("缺少数量", MissingText, MissingFill);
-        missingLegend.SetBounds(210, 111, 104, 23);
+        missingLegend.SetBounds(210, 139, 104, 23);
         var sufficientLegend = LegendBadge("数量达标", SufficientText, SufficientFill);
-        sufficientLegend.SetBounds(320, 111, 100, 23);
+        sufficientLegend.SetBounds(320, 139, 100, 23);
         var craftableLegend = LegendBadge("可合成", CraftableText, CraftableFill);
-        craftableLegend.SetBounds(426, 111, 140, 23);
-        toolbar.Controls.AddRange(new Control[] { title, _lblSynthesisStatus, targetLabel, _synthesisTargetCombo, starLabel, _synthesisStarCombo, setGoal, refreshRoute, refreshWiki, _lblSynthesisTarget, _lblSynthesisSource, _lblSynthesisUpdated, missingLegend, sufficientLegend, craftableLegend });
+        craftableLegend.SetBounds(426, 139, 140, 23);
+        toolbar.Controls.AddRange(new Control[] { title, _lblSynthesisStatus, seasonLabel, _synthesisSeasonCombo, targetLabel, _synthesisTargetCombo, starLabel, _synthesisStarCombo, setGoal, refreshRoute, refreshWiki, _lblSynthesisTarget, _lblSynthesisSource, _lblSynthesisUpdated, missingLegend, sufficientLegend, craftableLegend });
         void PlaceSynthesisControls()
         {
             var compact = toolbar.ClientSize.Width < 950;
-            toolbar.Height = compact ? 207 : 160;
-            setGoal.Location = new Point(compact ? 18 : 515, compact ? 92 : 50);
-            refreshRoute.Location = new Point(compact ? 171 : 665, compact ? 92 : 50);
-            refreshWiki.Location = new Point(compact ? 305 : 800, compact ? 92 : 50);
-            var nameY = compact ? 138 : 93;
-            _lblSynthesisTarget.Location = new Point(18, nameY);
-            _lblSynthesisSource.SetBounds(300, nameY, Math.Max(200, toolbar.ClientSize.Width - 318), 24);
-            var legendY = compact ? 173 : 126;
+            toolbar.Height = compact ? 226 : 176;
+            setGoal.SetBounds(compact ? 18 : 644, compact ? 92 : 50, 142, 36);
+            refreshRoute.SetBounds(compact ? 171 : 796, compact ? 92 : 50, compact ? 128 : 128, 36);
+            refreshWiki.SetBounds(compact ? 306 : 18, compact ? 92 : 92, 135, 32);
+            var nameY = compact ? 136 : 94;
+            _lblSynthesisTarget.SetBounds(compact ? 18 : 165, nameY, 270, 24);
+            _lblSynthesisSource.SetBounds(compact ? 300 : 445, nameY,
+                Math.Max(180, toolbar.ClientSize.Width - (compact ? 318 : 460)), 24);
+            var legendY = compact ? 176 : 139;
             missingLegend.Location = new Point(compact ? 18 : 210, legendY);
             sufficientLegend.Location = new Point(compact ? 130 : 320, legendY);
             craftableLegend.Location = new Point(compact ? 238 : 426, legendY);
@@ -1018,6 +1243,7 @@ internal sealed partial class MainForm
         toolbar.Resize += (_, _) => PlaceSynthesisControls();
         PlaceSynthesisControls();
 
+        _synthesisSeasonCombo.SelectedIndexChanged += (_, _) => SynthesisSeasonChanged();
         _synthesisTargetCombo.SelectedValueChanged += (_, _) => SynthesisSelectionChanged();
         _synthesisStarCombo.SelectedIndexChanged += (_, _) => SynthesisSelectionChanged();
 
@@ -1081,9 +1307,33 @@ internal sealed partial class MainForm
 
     private void SynthesisSelectionChanged()
     {
+        if (_updatingSynthesisTargets) return;
         if (_synthesisTargetCombo.SelectedValue is string code) _synthesisType = code;
         _synthesisStar = Math.Clamp(_synthesisStarCombo.SelectedIndex + 1, 1, 5);
         RefreshSynthesisPage();
+    }
+
+    private void SynthesisSeasonChanged()
+    {
+        if (_updatingSynthesisTargets || _synthesisSeasonCombo.SelectedIndex < 0) return;
+        var season = _synthesisSeasonCombo.SelectedIndex + 1;
+        var oldTarget = _synthesisType;
+        var targets = FishCatalog.Species.Where(x => x.Season == season).OrderBy(x => x.Code).ToList();
+        _updatingSynthesisTargets = true;
+        try
+        {
+            _synthesisTargetCombo.DataSource = null;
+            _synthesisTargetCombo.DataSource = targets;
+            _synthesisTargetCombo.DisplayMember = "DisplayName";
+            _synthesisTargetCombo.ValueMember = "Code";
+            _synthesisType = targets.Any(x => string.Equals(x.Code, oldTarget, StringComparison.OrdinalIgnoreCase))
+                ? oldTarget : targets.FirstOrDefault()?.Code ?? "";
+            if (_synthesisType.Length > 0) _synthesisTargetCombo.SelectedValue = _synthesisType;
+            _settings.SynthesisSeasonFilter = season;
+            _settings.Save();
+        }
+        finally { _updatingSynthesisTargets = false; }
+        SynthesisSelectionChanged();
     }
 
     private void DrawSynthesisTarget(object sender, DrawItemEventArgs e)
@@ -1114,7 +1364,7 @@ internal sealed partial class MainForm
         var stock = fish.GroupBy(f => (Type: f.ty ?? "", Star: f.Stars))
             .ToDictionary(g => g.Key, g => (Owned: g.Count(), Available: g.Count(Selection.CanMerge)));
         if (string.IsNullOrWhiteSpace(_synthesisType))
-            _synthesisType = "FS00033";
+            _synthesisType = FishCatalog.Species.FirstOrDefault(s => s.Season == _settings.SynthesisSeasonFilter)?.Code ?? "FS00033";
         _synthesisRoute = SynthesisPlanner.Build(_synthesisType, _synthesisStar);
         var target = FishCatalog.Find(_synthesisRoute.TargetType);
         _lblSynthesisTarget.Text = UiLanguage.T(target == null
@@ -1650,7 +1900,7 @@ internal sealed partial class MainForm
 
         var card = Surface();
         card.Dock = DockStyle.Top;
-        card.Height = 340;
+        card.Height = 445;
         var title = Label("设置", 13, true);
         title.SetBounds(20, 16, 240, 34);
         var languageLabel = Label("界面语言", 10, true, Muted);
@@ -1680,10 +1930,57 @@ internal sealed partial class MainForm
             _settings.Save();
         };
         var closeNote = Label("点击右上角 X 时按此设置执行，选择后自动保存。托盘模式下助手继续运行。", 9, false, Muted);
-        closeNote.SetBounds(138, 191, 640, 46);
+        closeNote.SetBounds(138, 191, 640, 24);
+        var connectionTitle = Label("游戏连接", 10, true, Muted);
+        connectionTitle.SetBounds(22, 222, 110, 28);
+        _connectionModeCombo.SetBounds(138, 218, 250, 34);
+        _connectionModeCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _connectionModeCombo.FlatStyle = FlatStyle.Flat;
+        _connectionModeCombo.BackColor = InputBg;
+        _connectionModeCombo.ForeColor = White;
+        _connectionModeCombo.Items.AddRange(new object[] { "自动（优先 Frida）", "Frida 内存连接", "插件桥接" });
+        _connectionModeCombo.SelectedIndex = _settings.ConnectionMode switch { "frida" => 1, "plugin" => 2, _ => 0 };
+        _connectionModeCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_changingLanguage || _connectionModeCombo.SelectedIndex < 0) return;
+            _settings.ConnectionMode = _connectionModeCombo.SelectedIndex switch { 1 => "frida", 2 => "plugin", _ => "auto" };
+            _settings.Save();
+            _log.Write("连接方式已改为 " + _connectionModeCombo.Text + "；重启助手后生效。");
+        };
+        var connectionNote = Label("Frida 等游戏启动 60 秒并确认登录网络稳定后连接；自动模式 90 秒后才考虑插件回退。", 9, false, Muted);
+        connectionNote.SetBounds(138, 254, 700, 24);
+        var multiOpen = ActionButton("管理多开");
+        multiOpen.SetBounds(406, 216, 112, 36);
+        multiOpen.Click += (_, _) =>
+        {
+            using var dialog = new MultiOpenDialog(_settings.GameDir, _settings.SelectedInstancePid);
+            if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            _settings.SelectedInstancePid = dialog.SelectedPid;
+            _settings.Save();
+            var selected = dialog.SelectedPid > 0 ? "PID " + dialog.SelectedPid : "自动选择";
+            _log.Write("多开管理：已选择 " + selected + "；重启助手后切换连接实例。");
+        };
+        var frameTitle = Label("游戏锁帧", 10, true, Muted);
+        frameTitle.SetBounds(22, 282, 110, 28);
+        _frameLimitCombo.SetBounds(138, 278, 250, 34);
+        _frameLimitCombo.DropDownStyle = ComboBoxStyle.DropDownList;
+        _frameLimitCombo.FlatStyle = FlatStyle.Flat;
+        _frameLimitCombo.BackColor = InputBg;
+        _frameLimitCombo.ForeColor = White;
+        _frameLimitCombo.Items.AddRange(new object[] { "不限帧", "10 FPS", "30 FPS" });
+        _frameLimitCombo.SelectedIndex = _settings.FrameLimit switch { 10 => 1, 30 => 2, _ => 0 };
+        _frameLimitCombo.SelectedIndexChanged += (_, _) =>
+        {
+            if (_changingLanguage || _frameLimitCombo.SelectedIndex < 0) return;
+            _settings.FrameLimit = _frameLimitCombo.SelectedIndex switch { 1 => 10, 2 => 30, _ => 0 };
+            _settings.Save();
+            ApplyFrameLimit();
+        };
+        var frameNote = Label("Frida 模式通过 Unity 运行时设置；插件模式不修改游戏帧率。", 9, false, Muted);
+        frameNote.SetBounds(400, 282, 440, 28);
         var commandTitle = Label("命令", 10, true, Muted);
-        commandTitle.SetBounds(22, 246, 110, 28);
-        _commandBox.SetBounds(138, 244, 340, 32);
+        commandTitle.SetBounds(22, 332, 110, 28);
+        _commandBox.SetBounds(138, 330, 340, 32);
         _commandBox.BackColor = InputBg;
         _commandBox.ForeColor = White;
         _commandBox.BorderStyle = BorderStyle.FixedSingle;
@@ -1695,16 +1992,17 @@ internal sealed partial class MainForm
             RunCommand(_commandBox.Text);
         };
         var commandRun = ActionButton("执行");
-        commandRun.SetBounds(490, 243, 84, 34);
+        commandRun.SetBounds(490, 329, 84, 34);
         commandRun.Click += (_, _) => RunCommand(_commandBox.Text);
-        _commandStatus.SetBounds(586, 244, 300, 30);
+        _commandStatus.SetBounds(586, 330, 300, 30);
         _commandStatus.ForeColor = Muted;
         _commandStatus.Font = new Font("Microsoft YaHei UI", 9F);
         var commandNote = Label("输入 /setting 或 /设置，直接跳到本页的设置项；输入 /help 查看可用命令。", 9, false, Muted);
-        commandNote.SetBounds(138, 282, 700, 40);
+        commandNote.SetBounds(138, 368, 700, 40);
         card.Controls.AddRange(new Control[]
         {
             title, languageLabel, _languageCombo, languageNote, closeTitle, _closeBehaviorCombo, closeNote,
+            connectionTitle, _connectionModeCombo, multiOpen, connectionNote, frameTitle, _frameLimitCombo, frameNote,
             commandTitle, _commandBox, commandRun, _commandStatus, commandNote
         });
         // Dock.Top 的排列顺序是后添加的在上，所以先加语言卡、后加部署卡，一键部署才会在页面顶部。
@@ -1943,6 +2241,10 @@ internal sealed partial class MainForm
         _settings.Language = language;
         _settings.Save();
         UiLanguage.Set(language);
+        if (_btnExit != null) _btnExit.AccessibleName = UiLanguage.T("退出助手");
+        var protectionTip = UiLanguage.T("按 Steam 近期成交中位价判断；无成交数据时使用最低在售价。超过设置的人民币金额时不参与合成。季节鱼和配方材料按勾选规则排除。");
+        _mergeProtectionTip.SetToolTip(_chkProtectMarketPrice, protectionTip);
+        _mergeProtectionTip.SetToolTip(_numMergeProtectionPrice, protectionTip);
         _changingLanguage = true;
         try
         {
@@ -1967,6 +2269,11 @@ internal sealed partial class MainForm
     private void UpdateDashboardSummary()
     {
         if (_lblHeaderConnection.IsDisposed) return;
+        if (_btnArm != null) _btnArm.Visible = _client.RequiresArm;
+        if (_lblArmHint != null)
+            _lblArmHint.Text = UiLanguage.T(_client.RequiresArm
+                ? "动作需游戏内放行、连接插件桥接，并点击 ARM。"
+                : "Frida 连接自动放行动作；自动繁育/合成开关直接控制任务，无需额外 ARM。");
 
         // 开机自检期间：显示「初始化中」，并且明确还没连接。
         // 这时候不允许连接游戏，状态要如实反映，不能让用户以为已经连上了。
@@ -1986,20 +2293,23 @@ internal sealed partial class MainForm
         }
 
         var blocked = !_startupCheckOk;
+        var gameSessionWaiting = _client.Connected && _gameBusy &&
+            _gameBusyReason == "等待助手确认游戏会话";
         var paused = blocked || _windowLocked || _actionPauseReason.Length > 0 ||
-            _client.Connected && (!_bridgeVersionOk || !_bridgeAllowsActions);
+            _client.Connected && (!_bridgeVersionOk || !_bridgeAllowsActions) || gameSessionWaiting;
         var waiting = _chkAuto.Checked && !_armed;
         var state = blocked ? "环境未就绪"
             : !_chkAuto.Checked && !_armed ? "已停止"
+            : gameSessionWaiting ? "等待游戏会话"
             : paused ? "已暂停"
             : !_client.Connected ? "等待连接"
             : waiting ? "正在开启" : "正在运行";
         _lblRunState.Text = "● " + UiLanguage.T(state);
         _lblRunState.ForeColor = state == "正在运行" ? Color.FromArgb(17, 108, 62)
-            : state is "已暂停" or "等待连接" or "正在开启" or "环境未就绪" ? Color.FromArgb(143, 87, 0)
+            : state is "已暂停" or "等待连接" or "等待游戏会话" or "正在开启" or "环境未就绪" ? Color.FromArgb(143, 87, 0)
             : Color.FromArgb(96, 108, 125);
         _lblRunState.BackColor = state == "正在运行" ? Color.FromArgb(221, 246, 232)
-            : state is "已暂停" or "等待连接" or "正在开启" or "环境未就绪" ? Color.FromArgb(255, 243, 212)
+            : state is "已暂停" or "等待连接" or "等待游戏会话" or "正在开启" or "环境未就绪" ? Color.FromArgb(255, 243, 212)
             : Color.FromArgb(235, 239, 244);
         if (_btnRecheck != null) _btnRecheck.Visible = blocked;
         _lblHeaderConnection.Text = UiLanguage.T(_client.Connected ? "● 已连接" : "● 未连接");
@@ -2288,7 +2598,7 @@ internal sealed partial class MainForm
         if (fish == null) return null;
         var english = FishCatalog.EnglishName(fish.ty);
         if (string.IsNullOrWhiteSpace(english)) return null;
-        return SteamMarket.Cached?.Find(english, fish.Stars);
+        return SteamMarket.LastCached?.Find(english, fish.Stars);
     }
 
     private string MarketPriceText(FishDto fish)
@@ -2301,14 +2611,56 @@ internal sealed partial class MainForm
     private Color MarketPriceColor(FishDto fish)
         => MarketQuoteFor(fish) != null ? CraftableText : Muted;
 
+    private void ConfigureMarketAutomation()
+    {
+        using var dialog = new MarketAutomationDialog(_settings, BuildFishExclusionItems());
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        if (dialog.MinimumPrice > dialog.MaximumPrice)
+        {
+            MessageBox.Show(this, UiLanguage.T("价格下限必须小于或等于上限。"),
+                UiLanguage.T("自动报价与导出设置"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+        if (dialog.AutoExport && !_settings.AutoSteamExport)
+        {
+            var confirm = MessageBox.Show(this,
+                UiLanguage.T("启用后，助手会按计划把匹配价格范围和排除条件的鱼发送到 Steam Inventory；鱼会从游戏仓库移出。是否启用？"),
+                UiLanguage.T("确认启用自动导出"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes) return;
+        }
+
+        _settings.AutoMarketRefresh = dialog.AutoRefresh;
+        _settings.MarketRefreshIntervalMinutes = dialog.RefreshIntervalMinutes;
+        _settings.AutoSteamExport = dialog.AutoExport;
+        _settings.AutoSteamExportMinPriceYuan = dialog.MinimumPrice;
+        _settings.AutoSteamExportMaxPriceYuan = dialog.MaximumPrice;
+        _settings.AutoSteamExportBatchSize = dialog.BatchSize;
+        _settings.SteamExportExcludedSeasons = dialog.ExcludedSeasons.OrderBy(x => x).ToList();
+        _settings.SteamExportExcludedRecipeSeasons = dialog.ExcludedRecipeSeasons.OrderBy(x => x).ToList();
+        _settings.SteamExportExcludedTypes = dialog.ExcludedTypes.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList();
+        _settings.Save();
+        SteamMarket.ConfigureCache(_settings.MarketRefreshIntervalMinutes,
+            Path.Combine(AppContext.BaseDirectory, "PCFish市场报价缓存.json"));
+        _nextAutoMarketRefreshAt = _settings.AutoMarketRefresh
+            ? DateTime.Now.AddSeconds(5)
+            : DateTime.MaxValue;
+        _nextAutoExportAt = _settings.AutoSteamExport ? DateTime.Now.AddSeconds(5) : DateTime.MaxValue;
+        UpdateMarketStatusLine();
+        _log.Write(_settings.AutoMarketRefresh
+            ? $"已设置每 {_settings.MarketRefreshIntervalMinutes} 分钟刷新报价。自动导出{(_settings.AutoSteamExport ? "已开启" : "已关闭")}。"
+            : $"已关闭定时报价刷新。自动导出{(_settings.AutoSteamExport ? "已开启，需手动查询报价后执行" : "已关闭")}。");
+    }
+
     /// <summary>拉取 Steam 市场报价，拉完刷新仓库表和状态行。</summary>
-    private async Task RefreshMarketAsync()
+    private async Task RefreshMarketAsync(bool automatic = false)
     {
         if (_marketBusy) return;
         _marketBusy = true;
         _btnMarket.Enabled = false;
         _lblMarketStatus.ForeColor = Muted;
-        _lblMarketStatus.Text = UiLanguage.T("正在查询 Steam 市场报价与近期成交价…");
+        _lblMarketStatus.Text = UiLanguage.T(automatic
+            ? "正在定时查询 Steam 市场报价与近期成交价…"
+            : "正在查询 Steam 市场报价与近期成交价…");
         try
         {
             var result = await SteamMarket.FetchAsync(SteamMarket.CurrencyCny,
@@ -2317,16 +2669,19 @@ internal sealed partial class MainForm
             _lblMarketStatus.Text = UiLanguage.T(result.Message);
             _log.Write("Steam 市场：" + result.Message);
             _nextMarketRetryAt = result.Ok ? DateTime.MinValue : DateTime.Now.AddMinutes(5);
+            _nextAutoMarketRefreshAt = DateTime.Now.AddMinutes(_settings.MarketRefreshIntervalMinutes);
             RefreshWarehouse();
             if (result.Ok && _lastFish != null)
             {
                 var matched = _lastFish.Count(f => MarketQuoteFor(f) != null);
                 _log.Write($"Steam 市场：{matched}/{_lastFish.Count} 条鱼匹配到报价；保护价优先使用近期成交中位价，无成交数据时使用最低在售价。");
             }
+            if (result.Ok && automatic && _settings.AutoSteamExport) TryAutoSteamExport(quoteRefreshSucceeded: true);
         }
         catch (Exception ex)
         {
             _nextMarketRetryAt = DateTime.Now.AddMinutes(5);
+            _nextAutoMarketRefreshAt = DateTime.Now.AddMinutes(5);
             _lblMarketStatus.ForeColor = Pink;
             _lblMarketStatus.Text = UiLanguage.T("查询失败：") + ex.Message;
             _log.Write("Steam 市场查询异常：" + ex.Message);
@@ -2338,15 +2693,151 @@ internal sealed partial class MainForm
         }
     }
 
+    private void MaybeAutoRefreshMarket()
+    {
+        if (!_settings.AutoMarketRefresh || _marketBusy || DateTime.Now < _nextAutoMarketRefreshAt) return;
+        _nextAutoMarketRefreshAt = DateTime.Now.AddMinutes(_settings.MarketRefreshIntervalMinutes);
+        _ = RefreshMarketAsync(automatic: true);
+    }
+
+    private void TryAutoSteamExport(bool quoteRefreshSucceeded = false)
+    {
+        if (!_settings.AutoSteamExport)
+        {
+            _nextAutoExportAt = DateTime.MaxValue;
+            return;
+        }
+        if (!quoteRefreshSucceeded && DateTime.Now < _nextAutoExportAt) return;
+        _nextAutoExportAt = DateTime.Now.AddMinutes(_settings.MarketRefreshIntervalMinutes);
+        if (_awaitingTradeExport)
+        {
+            _nextAutoExportAt = DateTime.Now.AddSeconds(15);
+            return;
+        }
+        if (_lastFish == null || SteamMarket.Cached == null)
+        {
+            _nextAutoExportAt = DateTime.Now.AddSeconds(30);
+            return;
+        }
+        if (!EnsureReadyForAction(quiet: true))
+        {
+            _nextAutoExportAt = DateTime.Now.AddSeconds(30);
+            return;
+        }
+        if (_lastStateAt == DateTime.MinValue || (DateTime.Now - _lastStateAt).TotalSeconds > 120)
+        {
+            RequestState();
+            _log.Write("自动导出已等待新仓库快照；市场报价缓存保留。");
+            _nextAutoExportAt = DateTime.Now.AddSeconds(15);
+            return;
+        }
+        if (_gameBusy || _statePending || _serverAuditPending || _roundActive || _awaitingBreed ||
+            _awaitingMerge || _awaitingUpgrade || _upgradePending)
+        {
+            _log.Write("自动导出本轮已跳过：游戏正在处理其它动作。下次报价刷新时再筛选。");
+            _nextAutoExportAt = DateTime.Now.AddSeconds(Math.Max(15, _actionWaitSeconds));
+            return;
+        }
+
+        var excludedTypes = SteamExportExcludedTypes();
+        var descending = _warehouseSort.SelectedIndex != 5;
+        var eligible = (_lastFish ?? new List<FishDto>())
+            .Where(f => f != null && !f.lk && !f.pl)
+            .Where(f => !excludedTypes.Contains(f.ty ?? ""))
+            .Where(f => !_settings.SteamExportExcludedSeasons.Contains(FishCatalog.Find(f.ty)?.Season ?? 0))
+            .Select(f => (Fish: f, Quote: MarketQuoteFor(f)))
+            .Where(x => x.Quote != null &&
+                        x.Quote.MergeProtectionPrice >= _settings.AutoSteamExportMinPriceYuan &&
+                        x.Quote.MergeProtectionPrice <= _settings.AutoSteamExportMaxPriceYuan);
+        eligible = descending
+            ? eligible.OrderByDescending(x => x.Quote.MergeProtectionPrice).ThenByDescending(x => x.Fish.RarityTier)
+            : eligible.OrderBy(x => x.Quote.MergeProtectionPrice).ThenByDescending(x => x.Fish.RarityTier);
+        var ids = eligible.Select(x => x.Fish.id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(Math.Clamp(_settings.AutoSteamExportBatchSize, 1, 100))
+            .ToList();
+        if (ids.Count == 0)
+        {
+            _log.Write("定时报价已更新；价格范围和排除规则下暂无自动导出候选鱼。");
+            return;
+        }
+
+        if (!SendTradeExport(ids, automated: true))
+            _nextAutoExportAt = DateTime.Now.AddSeconds(Math.Max(15, _actionWaitSeconds));
+    }
+
+    private async Task ExportFishByPriceRangeAsync()
+    {
+        if (_lastFish == null)
+        {
+            _log.Write("Steam 导出：先读取游戏仓库状态。");
+            RequestState();
+            return;
+        }
+        if (SteamMarket.Cached == null)
+        {
+            await RefreshMarketAsync();
+            if (SteamMarket.Cached == null)
+            {
+                MessageBox.Show(this, UiLanguage.T("市场报价不可用，尚未发送导出请求。请等市场扫描成功后重试。"),
+                    UiLanguage.T("Steam 导出"), MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+        }
+
+        var excludedTypes = SteamExportExcludedTypes();
+        var rows = _lastFish
+            .Where(f => f != null && !f.lk && !f.pl)
+            .Where(f => !excludedTypes.Contains(f.ty ?? ""))
+            .Where(f => !_settings.SteamExportExcludedSeasons.Contains(FishCatalog.Find(f.ty)?.Season ?? 0))
+            .Select(f => (Fish: f, Quote: MarketQuoteFor(f), Icon: FishIcon(f)))
+            .Where(x => x.Quote != null)
+            .Select(x => (x.Fish, x.Quote, x.Icon))
+            .ToList();
+        if (rows.Count == 0)
+        {
+            MessageBox.Show(this, UiLanguage.T("当前没有匹配到 Steam 市场报价的可导出鱼。"),
+                UiLanguage.T("Steam 导出"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        using var dialog = new SteamExportDialog(rows);
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var ids = dialog.SelectedIds;
+        if (ids.Count == 0)
+        {
+            MessageBox.Show(this, UiLanguage.T("尚未勾选要导出的鱼。"),
+                UiLanguage.T("Steam 导出"), MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var confirm = MessageBox.Show(this,
+            UiLanguage.T($"将通过游戏原生交易接口导出 {ids.Count} 条鱼到 Steam Inventory。导出后鱼会从游戏仓库移除。是否继续？"),
+            UiLanguage.T("确认导出鱼"), MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+        if (confirm != DialogResult.Yes) return;
+
+        SendTradeExport(ids);
+    }
+
+    private HashSet<string> SteamExportExcludedTypes()
+    {
+        var result = new HashSet<string>(_settings.SteamExportExcludedTypes ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+        result.UnionWith(WikiDatabase.RecipeFishTypes(_settings.SteamExportExcludedRecipeSeasons));
+        return result;
+    }
+
     /// <summary>启动时如果已有缓存，把状态行补上，仓库表也能立刻显示价格。</summary>
     private void UpdateMarketStatusLine()
     {
         if (_lblMarketStatus.IsDisposed || _marketBusy) return;
-        var cache = SteamMarket.Cached;
+        var cache = SteamMarket.LastCached;
         _lblMarketStatus.ForeColor = Muted;
         _lblMarketStatus.Text = cache == null
-            ? UiLanguage.T("未查询市场价：点「查询市场价」获取 Steam 参考价。")
-            : UiLanguage.T($"市场价：{cache.TotalItems} 条报价，近期成交中位价已查询，更新于 {cache.FetchedAt:HH:mm}。");
+            ? UiLanguage.T(_settings.AutoMarketRefresh
+                ? "没有报价缓存：等待定时 Steam 市场查询。"
+                : "未查询市场价：点「查询市场价」获取 Steam 参考价。")
+            : UiLanguage.T($"市场价缓存：{cache.TotalItems} 条报价，更新于 {cache.FetchedAt:HH:mm}" +
+                           (SteamMarket.Cached == null ? "（已过期，等待刷新）" : "（有效）"));
     }
 
     private void RefreshWarehouse()

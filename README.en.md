@@ -12,10 +12,11 @@ The BepInEx console hides on startup, and file logging continues.
 
 | Component | Role |
 |---|---|
-| `pcfish-autohelper/` | BepInEx plugin. Opens a loopback channel on `127.0.0.1:27777` inside the game process. |
+| `PCFishFrida/` | Plugin-free worker. Attaches to the game by PID, loads an agent in-process, and listens on `127.0.0.1:27778`. |
 | `PCFishController/` | Standalone desktop app. Shows status and sends actions. |
+| `pcfish-autohelper/` | Legacy BepInEx plugin, kept as a compatibility fallback. |
 
-Breeding goes through the game's own data and network entry points. The controller is a plain WinForms program; closing it leaves the game running.
+Frida is the default connection. The worker waits 60 seconds after the game process starts, then attaches by PID. Actions remain paused until the game has a Steam sign-in token and its network stays idle for 30 seconds. The controller is a WinForms app; closing it leaves the game running. Settings > Game connection offers Auto, Frida and Plugin modes.
 
 ## What it does
 
@@ -23,33 +24,34 @@ Breeding goes through the game's own data and network entry points. The controll
 - Every 15-30 minutes (configurable), reads the breeding counter and breeds until it reaches zero, then waits for the next check
 - Picks fish by your goal route, or by rarity and stars; skips fish on cooldown, out of breed uses, locked, or displayed
 - Skips direct parent-child pairs, and avoids combinations the server rejected
-- Keeps at least 60 seconds between actions, enforced by the plugin and the controller
+- Keeps at least 60 seconds between actions, enforced by the connection layer and the controller
 - Verifies breeding results against parent counts and the returned new fish ID
 - Reads your remaining breed counts from the server before each round, to filter out a stale local cache
 - Tracks delayed replies and checks fish changes before resuming a timed-out request
-- Runs auto synthesis when the warehouse passes a configurable threshold (900 by default). The enabled-by-default market filter skips fish whose Steam recent-sale median is above ¥1; it falls back to the lowest listing when no median is available
-- Pauses auto synthesis when the Steam listing scan is incomplete. Seasonal fish are always excluded; Season 1 recipe fish can be used
-- Selects 10 fish with the same rarity and star grade, preferring the highest rarity and star group
+- Runs auto synthesis when the warehouse passes a configurable threshold (900 by default). The market filter defaults to ¥1 and protects fish above the selected CNY amount; unmapped fish remain protected until a quote is matched
+- Pauses auto synthesis when the Steam listing scan is incomplete. S1 and S2 are individually selectable, and each season's recipe fish can also be excluded; the fish exclusion dialog shows icons, prices, counts, rarity, and stars
+- Selects 10 fish with the same rarity and star grade; synthesis and breeding each support high/low rarity or high/low star priority
 - Confirms each craft by re-reading the fish list
-- Synthesis follows real click steps: open the function window, switch to the Merge tab, click "+" once per fish, then click Synthesize. It waits for the animation, closes the result popup, then closes the window, with a pause between each step
+- Synthesis records fish IDs in the hidden merge object, sends the request through the game's native merge method, receives the game callback and verifies fish-list changes
 - Dismisses the game's own dialog (for example "a network error occurred") when it appears, records it, and retries later
 - A configurable safety wait (5 seconds by default) runs after each craft before the next action
 - Closes the game's own "invite a friend for a free heart" popup when it appears. That window covers the function window, so the assistant clicks its Close button through the game's own entry point, leaving other dialogs untouched
+- Dismisses a blocking `UIAlterMessage` through its game `Hide()` method after checking the game input-block state
 
 ## Interface
 
-Overview, Auto Breeding, Auto Synthesis, Warehouse, Synthesis Route, Logs and Settings. The Auto Synthesis page holds the on/off switch, market protection toggle, trigger threshold and safety wait, plus a one-shot "Synthesize Once Now" button and the current warehouse, candidate and next-check status. The Warehouse uses white game-style cards with fish art, rarity, stars, remaining breed uses and Steam recent-sale median (or lowest listing when no median is available). Fish with the same name and stars are grouped with an × quantity marker. Cards are drawn as they scroll into view. Search, filters and sorting are available. The interface supports Chinese and English. The close action can ask each time, exit the assistant, or minimize it to the system tray.
+Overview, Auto Breeding, Auto Synthesis, Warehouse, Synthesis Route, Logs and Settings. Auto Breeding and Auto Synthesis each support high/low rarity or high/low star priority. The Warehouse caches complete Steam quote scans and supports scheduled refresh, price-range filtering, scheduled export, batch limits, and multi-select exclusions for seasons, recipe fish, and individual species. Automatic export starts disabled and requires explicit confirmation when enabled; exported fish leave the game warehouse for Steam Inventory. S2 recipes and five new regular fish are read from the installed game data. Settings offers 10 FPS and 30 FPS caps and multi-open controls for Sandboxie launch and selecting one PID for the assistant to control. Changing the PID takes effect after restarting the assistant. Fish icons ship as a correctly repacked atlas matched by inventory `sp`. The interface supports Chinese and English.
 
-## One-click setup
+## Plugin compatibility setup
 
-The Settings button locates the game folder, installs the BepInEx 6 runtime when missing, copies the plugin into `BepInEx\plugins`, starts the game once to write the config file, then turns on the in-game action switch. Progress prints as it runs.
+Frida mode starts from the game and assistant. The Settings setup button installs or updates the legacy BepInEx plugin when Plugin mode is selected. The build script publishes the Frida assistant by default; `-DeployPlugin` builds and deploys the legacy plugin.
 
 The Synthesis Route uses the game's rarity colors for fish names. Yellow, blue and green mark missing materials, sufficient quantities and season fish ready to synthesize in both the route and table.
 
 ## Safety
 
-The channel binds to `127.0.0.1` only. The in-game switch that allows external actions is off by default, and the controller has its own ARM toggle. On an error the assistant stops the current action, and the logs hold no authentication tokens.
+The worker listens on `127.0.0.1`. Plugin mode requires the game's external-action switch and the controller ARM toggle. Frida mode connects by PID and calls the game's native entry points. The assistant stops the current action after an error, and its logs contain no authentication tokens.
 
 ## Requirements
 
-Windows 10/11 64-bit and PCFish (Steam). The release download carries its own runtime, so it needs no separate .NET install. Building the controller needs the .NET 8 SDK; building the plugin needs the .NET 6 SDK or newer.
+Windows 10/11 64-bit and PCFish (Steam). The release download carries its own runtime, so it needs no separate .NET install. Building the controller needs the .NET 8 SDK; the Frida worker needs the .NET 10 SDK; the legacy plugin needs the .NET 6 SDK or newer.

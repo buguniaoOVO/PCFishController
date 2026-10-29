@@ -1,20 +1,17 @@
 using System;
 using System.Collections.Generic;
-using NN.PF.Core.Managers;
 using NN.PF.UI.Merge;
 using NN.PF.UI.Confirm;
 
 namespace PCFishAutoHelper;
 
 /// <summary>
-/// 后台自动合成。按真实点击顺序驱动游戏自己的合成窗口：
-///   打开功能窗口 → 切到合成标签 → 逐条点“+”放鱼 → 点“合成” → 等动画 → 关闭结果弹窗。
-/// 只调用游戏公开的 UI 入口，不手工改界面对象。
+/// 后台自动合成。使用游戏预先创建的隐藏合成对象准备材料，再调用游戏原生合成入口发送请求。
+/// 不显示或关闭功能窗口；响应由游戏自己的合成回调处理。
 /// </summary>
 internal static class MergeBridge
 {
     internal const int RequiredCount = 10;
-    private const int MergeTabIndex = 3;   // 功能窗口底边第 4 个图标 = 合成
 
     internal static UIMerge Find()
     {
@@ -27,43 +24,6 @@ internal static class MergeBridge
         }
         catch (Exception ex) { Journal.Error("查找合成面板失败", ex); }
         return null;
-    }
-
-    private static UIManager Manager()
-    {
-        try { return UIManager.HasInstance ? UIManager.Instance : null; }
-        catch (Exception ex) { Journal.Error("读取 UI 管理器失败", ex); return null; }
-    }
-
-    /// <summary>
-    /// 打开功能窗口并切到合成标签。
-    /// 先 OpenWindow（等价于点向上箭头），再 ChangeTabMenu（等价于点第 4 个图标）。
-    /// </summary>
-    internal static bool OpenMergeWindow(out string detail)
-    {
-        detail = "";
-        try
-        {
-            var ui = Manager();
-            if (ui == null) { detail = "UI 管理器尚未就绪"; return false; }
-            ui.OpenWindow();
-            ui.ChangeTabMenu(MergeTabIndex);
-            detail = "已打开功能窗口并切到合成标签";
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Journal.Error("打开合成标签失败", ex);
-            detail = "打开合成标签失败：" + ex.GetBaseException().Message;
-            return false;
-        }
-    }
-
-    /// <summary>关闭功能窗口。等价于点右上角 X。</summary>
-    internal static void CloseWindow()
-    {
-        try { Manager()?.CloseWindow(); }
-        catch (Exception ex) { Journal.Error("关闭功能窗口失败", ex); }
     }
 
     /// <summary>只读探测：报告合成面板状态，不执行任何动作。</summary>
@@ -103,7 +63,7 @@ internal static class MergeBridge
     }
 
     /// <summary>
-    /// 清空合成槽位。等同于点一次“重置”按钮。
+    /// 清空隐藏合成对象保存的材料 ID。
     /// </summary>
     internal static bool ClearParents(UIMerge ui, out string detail)
     {
@@ -123,7 +83,7 @@ internal static class MergeBridge
     }
 
     /// <summary>
-    /// 放一条鱼：调用游戏自己的 SetParent，等同于点一次“+”。
+    /// 记录一条鱼：调用游戏自己的 SetParent 方法，不模拟界面输入。
     /// 返回 true 表示游戏接受了这条鱼。
     /// </summary>
     internal static bool AddParent(UIMerge ui, string id, out string detail)
@@ -156,8 +116,8 @@ internal static class MergeBridge
         catch { return 0; }
     }
 
-    /// <summary>点“合成”按钮。等价于点合成窗口里那个紫色合成按钮。</summary>
-    internal static bool ClickMerge(UIMerge ui, out string detail)
+    /// <summary>调用游戏原生合成入口发送请求并等待游戏回调。</summary>
+    internal static bool SendMergeRequest(UIMerge ui, out string detail)
     {
         detail = "";
         try
@@ -168,7 +128,7 @@ internal static class MergeBridge
                 return false;
             }
             ui.Merge();
-            detail = "已点击合成";
+            detail = "已通过游戏原生合成入口发送请求";
             return true;
         }
         catch (Exception ex)

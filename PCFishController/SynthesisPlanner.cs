@@ -12,7 +12,7 @@ internal sealed class SynthesisRoute
 }
 
 /// <summary>
-/// Wiki Season 1 路线的本地结构化数据。
+/// 本地结构化赛季配方数据来自游戏 fish_season_recipe CSV。
 /// 普通合成的 Wiki 页面没有发布固定物种配方，因此保留为待验证节点。
 /// </summary>
 internal static class SynthesisPlanner
@@ -55,7 +55,7 @@ internal static class SynthesisPlanner
                 TargetStar = targetStar,
                 Exact = true,
                 Rows = rows,
-                SourceText = "Wiki Season 1：已确认材料和星级要求；赛季鱼使用合成路线。"
+                SourceText = $"游戏数据 S{recipe.Season} 赛季配方：材料和星级要求已载入。"
             };
         }
 
@@ -79,6 +79,9 @@ internal static class SynthesisPlanner
         }
         foreach (var ingredient in recipe.Ingredients ?? new List<WikiIngredient>())
         {
+            if (star > 1 && recipe.PreviousTargetReplacesCore &&
+                string.Equals(ingredient.Role, "核心鱼", StringComparison.OrdinalIgnoreCase))
+                continue;
             var ingredientStar = ingredient.Role == "核心鱼" || !recipe.RepeatSupportAtTargetStar
                 ? ingredient.Star
                 : star;

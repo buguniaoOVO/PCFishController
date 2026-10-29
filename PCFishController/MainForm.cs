@@ -18,10 +18,12 @@ internal sealed partial class MainForm : Form
 private const string ExpectedBridgeVersion = "0.39.0";
     private readonly AppSettings _settings;
     private readonly Logger _log = new();
-    private readonly BridgeClient _client;
+    private readonly IGameBridge _client;
     private NotifyIcon _trayIcon;
     private ContextMenuStrip _trayMenu;
     private bool _allowClose;
+    private IntPtr _gameWindowHandle;
+    private int _gameWindowProcessId = -1;
     private DateTime _nextConsoleCheckAt;
     /// <summary>开机自检状态。pending 时不允许连接游戏。</summary>
     private bool _startupCheckPending = true;
@@ -47,8 +49,10 @@ private const string ExpectedBridgeVersion = "0.39.0";
     private readonly NumericUpDown _numMinGrade = new();
     private readonly NumericUpDown _numMergeThreshold = new();
     private readonly NumericUpDown _numMergeSafety = new();
+    private readonly NumericUpDown _numMergeProtectionPrice = new();
     private readonly CheckBox _chkMerge = new();
     private readonly CheckBox _chkProtectMarketPrice = new();
+    private readonly CheckBox _chkSeasonalIgnoreThreshold = new();
     private readonly ToolTip _mergeProtectionTip = new();
     private readonly CheckBox _chkAutoUpdate = new();
     private readonly Button _btnMergeNow = new();
@@ -95,6 +99,8 @@ private const string ExpectedBridgeVersion = "0.39.0";
     private DateTime _breedRequestedAt = DateTime.MinValue;
     private bool _upgradePending;
     private bool _awaitingUpgrade;
+    private bool _awaitingTradeExport;
+    private DateTime _tradeExportRequestedAt = DateTime.MinValue;
     private int _roundAttempts;
     private int _roundSuccesses;
     private readonly HashSet<string> _roundAvoidedFish = new();
@@ -120,7 +126,9 @@ private const string ExpectedBridgeVersion = "0.39.0";
     private bool _canLevelUp;
     private int _charge = -1;
     private int _secToHeart = -1;
-    private bool _gameBusy;
+    private bool _gameBusy = true;
+    private string _gameBusyReason = "";
+    private string _lastNetworkReadyReason = "";
     private bool _waitingForGameIdle;
     private string _actionPauseReason = "";
     /// <summary>
@@ -156,6 +164,13 @@ private const string ExpectedBridgeVersion = "0.39.0";
     internal MainForm()
     {
         _settings = AppSettings.Load();
+        SteamMarket.ConfigureCache(_settings.MarketRefreshIntervalMinutes,
+            Path.Combine(AppContext.BaseDirectory, "PCFish市场报价缓存.json"));
+        var marketFetchedAt = SteamMarket.LastCached?.FetchedAt ?? DateTime.MinValue;
+        _nextAutoMarketRefreshAt = marketFetchedAt == DateTime.MinValue
+            ? DateTime.Now.AddSeconds(8)
+            : marketFetchedAt.AddMinutes(_settings.MarketRefreshIntervalMinutes);
+        _nextAutoExportAt = _settings.AutoSteamExport ? DateTime.Now.AddSeconds(8) : DateTime.MaxValue;
         UiLanguage.Set(_settings.Language);
         WikiDatabase.Load();
         // 从配置读自动繁育开关（默认关）。启动时不会自己动，但不再强制只读：
@@ -163,7 +178,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         // 出问题的是绕过游戏窗口生命周期去改 UI 的旧路径。现在动作只走数据/网络入口。
         _relations = new RelationStore(Path.Combine(AppContext.BaseDirectory, "PCFish亲缘关系.json"));
         _failedPairs = new FailedPairStore(Path.Combine(AppContext.BaseDirectory, "PCFish失败配对.json"));
-        _client = new BridgeClient("127.0.0.1", _settings.Port);
+        _client = CreateBridge(_settings);
 
         RollNextInterval();
 
@@ -196,6 +211,23 @@ private const string ExpectedBridgeVersion = "0.39.0";
     }
 
     /// <summary>
+    /// 按设置选连接方式。auto 优先 Frida 内存连接；worker 缺失或启动失败时，
+    /// MainForm 会提示并允许一键切回插件桥接。
+    /// </summary>
+    private static IGameBridge CreateBridge(AppSettings settings)
+    {
+        var baseDir = AppContext.BaseDirectory;
+        var worker = Path.Combine(baseDir, "PCFishFrida.exe");
+        if (settings.ConnectionMode == "plugin" || !File.Exists(worker))
+            return new BridgeClient("127.0.0.1", settings.Port);
+
+        var frida = new FridaGameClient("127.0.0.1", settings.FridaPort, worker,
+            Path.Combine(baseDir, "PCFishFridaClient.log"), settings.SelectedInstancePid);
+        if (settings.ConnectionMode == "frida") return frida;
+        return new AutoGameBridge(frida, new BridgeClient("127.0.0.1", settings.Port));
+    }
+
+    /// <summary>
     /// 启动自检：确认游戏环境和插件与助手一致。检测期间界面显示「初始化中」，
     /// 并且不允许连接；检测通过后才放行连接。
     /// </summary>
@@ -204,7 +236,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         StartupCheckResult result;
         try
         {
-            result = await Task.Run(() => StartupCheck.Run(_settings.GameDir));
+            result = await Task.Run(() => StartupCheck.Run(_settings.GameDir, _client.RequiresPlugin));
         }
         catch (Exception ex)
         {
@@ -268,7 +300,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         StartupCheckResult result;
         try
         {
-            result = await Task.Run(() => StartupCheck.Run(_settings.GameDir));
+            result = await Task.Run(() => StartupCheck.Run(_settings.GameDir, _client.RequiresPlugin));
         }
         catch (Exception ex)
         {
@@ -334,6 +366,82 @@ private const string ExpectedBridgeVersion = "0.39.0";
         BuildDashboardUi();
     }
 
+    private void ExitAssistant()
+    {
+        if (IsDisposed || Disposing) return;
+        _allowClose = true;
+        SaveSettings();
+        Close();
+    }
+
+    private IntPtr ResolveGameWindow()
+    {
+        var process = GameProcess.Find();
+        if (process == null)
+        {
+            _gameWindowHandle = IntPtr.Zero;
+            _gameWindowProcessId = -1;
+            return IntPtr.Zero;
+        }
+
+        try
+        {
+            if (_gameWindowProcessId != process.Id)
+            {
+                _gameWindowHandle = IntPtr.Zero;
+                _gameWindowProcessId = process.Id;
+            }
+            if (_gameWindowHandle != IntPtr.Zero && WindowVisibility.IsWindow(_gameWindowHandle))
+                return _gameWindowHandle;
+
+            process.Refresh();
+            var handle = process.MainWindowHandle;
+            if (handle != IntPtr.Zero && WindowVisibility.IsWindow(handle))
+                _gameWindowHandle = handle;
+            return _gameWindowHandle;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+        finally
+        {
+            process.Dispose();
+        }
+    }
+
+    private void ToggleGameWindow()
+    {
+        var window = ResolveGameWindow();
+        if (window == IntPtr.Zero)
+        {
+            _log.Write("未找到 PCFish 游戏窗口；请先启动游戏并显示其主窗口。");
+            UpdateGameWindowButton();
+            return;
+        }
+
+        if (WindowVisibility.IsVisible(window))
+        {
+            WindowVisibility.Hide(window);
+            _log.Write("已隐藏 PCFish 游戏窗口。");
+        }
+        else
+        {
+            WindowVisibility.Show(window);
+            _log.Write("已显示 PCFish 游戏窗口。");
+        }
+        UpdateGameWindowButton();
+    }
+
+    private void UpdateGameWindowButton()
+    {
+        if (_btnGameWindow == null || _btnGameWindow.IsDisposed) return;
+        var window = ResolveGameWindow();
+        _btnGameWindow.Enabled = window != IntPtr.Zero;
+        _btnGameWindow.Text = UiLanguage.T(window != IntPtr.Zero && !WindowVisibility.IsVisible(window)
+            ? "显示游戏窗口" : "隐藏游戏窗口");
+    }
+
     private void InitializeTrayIcon()
     {
         _trayMenu = new ContextMenuStrip();
@@ -347,12 +455,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         };
 
         var exitItem = _trayMenu.Items.Add(UiLanguage.T("退出助手"));
-        exitItem.Click += (_, _) =>
-        {
-            _allowClose = true;
-            SaveSettings();
-            Close();
-        };
+        exitItem.Click += (_, _) => ExitAssistant();
 
         _trayIcon = new NotifyIcon
         {
@@ -507,6 +610,13 @@ private const string ExpectedBridgeVersion = "0.39.0";
         };
 
         _numMinGrade.ValueChanged += (_, _) => _settings.MinGrade = (int)_numMinGrade.Value;
+        _cmbBreedRarityPriority.SelectedIndexChanged += (_, _) =>
+        {
+            if (_cmbBreedRarityPriority.SelectedIndex < 0) return;
+            _settings.AutoBreedPriorityMode = PriorityModeFromIndex(_cmbBreedRarityPriority.SelectedIndex);
+            _settings.AutoBreedPreferHighRarity = _settings.AutoBreedPriorityMode == "rarity_high";
+            _settings.Save();
+        };
         _numMergeThreshold.ValueChanged += (_, _) =>
         {
             _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
@@ -542,10 +652,42 @@ private const string ExpectedBridgeVersion = "0.39.0";
             UpdateMergeStatus();
         };
 
+        _chkSeasonalIgnoreThreshold.CheckedChanged += (_, _) =>
+        {
+            _settings.AutoMergeSeasonalIgnoreThreshold = _chkSeasonalIgnoreThreshold.Checked;
+            _settings.Save();
+            if (_chkSeasonalIgnoreThreshold.Checked) _nextMergeCheckAt = DateTime.Now;
+            _log.Write(_chkSeasonalIgnoreThreshold.Checked
+                ? "已开启：赛季鱼材料凑齐即合成，无视仓库阈值。"
+                : "已关闭：赛季鱼无视阈值合成。");
+            UpdateMergeStatus();
+        };
+
+        _numMergeProtectionPrice.ValueChanged += (_, _) =>
+        {
+            _settings.AutoMergeProtectionPriceYuan = _numMergeProtectionPrice.Value;
+            _settings.Save();
+            UpdateMergeStatus();
+        };
+
+        _cmbMergeRarityPriority.SelectedIndexChanged += (_, _) =>
+        {
+            if (_cmbMergeRarityPriority.SelectedIndex < 0) return;
+            _settings.AutoMergePriorityMode = PriorityModeFromIndex(_cmbMergeRarityPriority.SelectedIndex);
+            _settings.AutoMergePreferHighRarity = _settings.AutoMergePriorityMode == "rarity_high";
+            _settings.Save();
+            UpdateMergeStatus();
+        };
+
         _btnMergeNow.Click += (_, _) => MergeNow();
 
         _btnOnce.Click += (_, _) =>
         {
+            if (_gameBusy)
+            {
+                _log.Write("游戏仍在启动、登录或处理请求；连接稳定后再开始繁育。");
+                return;
+            }
             if (!EnsureReadyForAction()) return;
             _log.Write("手动触发：开始一轮繁育。");
             BeginRound();
@@ -553,6 +695,11 @@ private const string ExpectedBridgeVersion = "0.39.0";
 
         _btnUpgrade.Click += (_, _) =>
         {
+            if (_gameBusy)
+            {
+                _log.Write("游戏仍在启动、登录或处理请求；连接稳定后再升级。");
+                return;
+            }
             if (!EnsureReadyForAction()) return;
             _log.Write("手动请求鱼缸升级检查。");
             SendUpgrade();
@@ -627,13 +774,18 @@ private const string ExpectedBridgeVersion = "0.39.0";
         _settings.WinY = Location.Y;
         _settings.AutoBreed = _chkAuto.Checked;
         _settings.AutoUpgrade = _chkAutoUpgrade.Checked;
+        _settings.AutoBreedPriorityMode = PriorityModeFromIndex(_cmbBreedRarityPriority.SelectedIndex);
+        _settings.AutoBreedPreferHighRarity = _settings.AutoBreedPriorityMode == "rarity_high";
         _settings.BreedIntervalMinSeconds = (int)_numIvMin.Value * 60;
         _settings.BreedIntervalMaxSeconds = (int)_numIvMax.Value * 60;
         _settings.MinGrade = (int)_numMinGrade.Value;
         _settings.AutoMergeThreshold = (int)_numMergeThreshold.Value;
         _settings.MergeSafetySeconds = (int)_numMergeSafety.Value;
         _settings.AutoMerge = _chkMerge.Checked;
+        _settings.AutoMergePriorityMode = PriorityModeFromIndex(_cmbMergeRarityPriority.SelectedIndex);
+        _settings.AutoMergePreferHighRarity = _settings.AutoMergePriorityMode == "rarity_high";
         _settings.AutoMergeProtectMarketPriceAboveOneYuan = _chkProtectMarketPrice.Checked;
+        _settings.AutoMergeProtectionPriceYuan = _numMergeProtectionPrice.Value;
         _settings.AutoCheckUpdate = _chkAutoUpdate.Checked;
         _settings.Language = UiLanguage.Current;
         _settings.GoalType = _goalTypeCombo?.SelectedValue?.ToString() ?? _settings.GoalType;
@@ -678,16 +830,22 @@ private const string ExpectedBridgeVersion = "0.39.0";
         {
             if (connected)
             {
-                _log.Write($"已连上桥接 127.0.0.1:{_settings.Port}");
+                // Wait for the first readiness tick before any manual or automatic game action.
+                _gameBusy = true;
+                _gameBusyReason = "等待游戏登录或网络初始化";
+                _log.Write($"已连上{_client.ModeName}");
                 // 连上就先拉一次完整鱼群，界面上马上有东西看，不用等用户点
                 if (_chkAuto.Checked)
                 {
                     _nextCheckAt = DateTime.Now;
                 }
+                ApplyFrameLimit();
                 RequestState();
             }
             else
             {
+                _gameBusy = true;
+                _gameBusyReason = "等待游戏连接";
                 _armed = false;
                 _bridgeVersionOk = false;
                 _serverInventoryReady = false;
@@ -711,7 +869,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
                     _pendingParentA = _pendingParentB = _pendingNewFishId = null;
                 }
                 EndRound();
-                _log.Write("桥接断开（游戏没开、或插件没装）。2 秒后自动重试。");
+                _log.Write(_client.ModeName + "断开（游戏没开或连接不可用）。2 秒后自动重试。");
             }
             UpdateStatusLabels();
         });
@@ -719,6 +877,14 @@ private const string ExpectedBridgeVersion = "0.39.0";
 
     private void SendArm(bool on)
     {
+        if (!_client.RequiresArm)
+        {
+            // Frida 自动连接没有单独 ARM 闸；安全熔断由暂停原因和恢复计时管理。
+            _armed = on || string.IsNullOrWhiteSpace(_actionPauseReason);
+            _client.Send(on ? "ARM 1" : "ARM 0");
+            UpdateStatusLabels();
+            return;
+        }
         if (on && _startupCheckPending)
         {
             _log.Write("初始化中：正在检测运行环境，检测通过后才能放行动作。");
@@ -761,6 +927,15 @@ private const string ExpectedBridgeVersion = "0.39.0";
 
     private void RequestServerAudit()
     {
+        if (!_client.SupportsServerAudit)
+        {
+            _serverInventoryReady = true;
+            _lastServerAuditAt = DateTime.Now;
+            _serverAuditPending = false;
+            if (_armAfterServerAudit) { _armAfterServerAudit = false; SendArm(true); }
+            if (_beginRoundAfterServerAudit) { _beginRoundAfterServerAudit = false; BeginRound(); }
+            return;
+        }
         if (_serverAuditPending || !_client.Connected || DateTime.Now < _serverAuditRetryAt) return;
         _serverAuditPending = true;
         _serverAuditRetryAt = DateTime.MinValue;
@@ -796,6 +971,14 @@ private const string ExpectedBridgeVersion = "0.39.0";
         _client.Send("STATE");
     }
 
+    private void ApplyFrameLimit()
+    {
+        if (!_client.Connected || _client.RequiresPlugin) return;
+        var requested = _settings.FrameLimit is 10 or 30 ? _settings.FrameLimit : 0;
+        _client.Send("FRAMELIMIT " + requested);
+        _log.Write(requested == 0 ? "已请求恢复游戏默认帧率。" : $"已请求将游戏锁帧为 {requested} FPS。");
+    }
+
     private void RequestBreedStatus()
     {
         if (!_client.Connected || !_breedRequest.Waiting || DateTime.Now < _nextBreedStatusAt) return;
@@ -825,6 +1008,50 @@ private const string ExpectedBridgeVersion = "0.39.0";
         _lastActionAt = DateTime.Now;
     }
 
+    /// <summary>调用游戏原生交易入口；自动发送只能由用户在市场设置中主动开启。</summary>
+    private bool SendTradeExport(IReadOnlyList<string> ids, bool automated = false)
+    {
+        if (ids == null || ids.Count == 0) return false;
+        if (_client.RequiresPlugin)
+        {
+            _log.Write("Steam 导出需要 Frida 内存连接。");
+            return false;
+        }
+        if (_awaitingTradeExport)
+        {
+            _log.Write("上一笔 Steam 导出仍在等待游戏回报。");
+            return false;
+        }
+        if (!EnsureReadyForAction())
+        {
+            _log.Write("Steam 导出未发送：连接或动作安全条件未就绪。");
+            return false;
+        }
+        // 注意不要再把 _roundActive 放进这个条件：自动轮次开启后它几乎一直是 true，
+        // 导出会被永久挡掉（日志表现为「游戏或助手正在处理其他动作」）。
+        // 真正代表动作占用的 _gameBusy / _awaiting* 已经覆盖，轮次间隙允许导出。
+        if (_gameBusy || _statePending || _serverAuditPending ||
+            _awaitingBreed || _awaitingMerge || _awaitingUpgrade)
+        {
+            _log.Write("Steam 导出未发送：游戏或助手正在处理其他动作。");
+            return false;
+        }
+        if (_actionWaitSeconds > 0)
+        {
+            _log.Write($"Steam 导出未发送：需再等待 {_actionWaitSeconds} 秒以满足动作间隔。");
+            return false;
+        }
+
+        _client.Send("TRADEEXPORT " + string.Join(" ", ids));
+        _lastActionAt = DateTime.Now;
+        _awaitingTradeExport = true;
+        _tradeExportRequestedAt = DateTime.Now;
+        _log.Write(automated
+            ? $"自动导出：已请求把 {ids.Count} 条鱼送入 Steam Inventory，等待游戏回报。"
+            : $"已请求游戏导出 {ids.Count} 条鱼至 Steam Inventory，等待游戏回包核对。");
+        return true;
+    }
+
     /// <summary>自动合成的触发入口：仓库超过阈值就发起一次。</summary>
     private void MaybeAutoMerge()
     {
@@ -839,12 +1066,79 @@ private const string ExpectedBridgeVersion = "0.39.0";
     }
 
     /// <summary>
+    /// 赛季鱼达标即合成：材料凑齐 10 条就发一笔，无视仓库阈值。
+    /// 赛季配方固定为「核心鱼×1 + 辅助鱼×3×3 = 10 条」，与游戏合成槽格数一致，
+    /// 所以不需要额外填充材料，也不会因为凑不够格而浪费鱼。
+    /// </summary>
+    private void MaybeSeasonalMergeIgnoreThreshold()
+    {
+        if (!_settings.AutoMergeSeasonalIgnoreThreshold) return;
+        if (_lastFish == null || _lastFish.Count < 10) return;
+        if (_roundActive || _awaitingBreed || _breedRequest.Active) return;
+        if (_awaitingMerge || _awaitingTradeExport) return;
+
+        var season = _settings.SynthesisSeasonFilter;
+        // 按目标鱼品质降序：神话(tier5) 优先。赛季配方是唯一能稳定产出神话鱼的途径，
+        // 而普通合成要求同品质同星凑满 10 条，神话鱼数量永远不够，只能靠配方产。
+        // 两个赛季都尝试（S1 祭典章鱼 / S2 鬼火灯笼水母都是神话），用户选的赛季排前面。
+        var candidates = WikiDatabase.Data.Recipes
+            .OrderByDescending(recipe => FishCatalog.Find(recipe.Target)?.Tier ?? 0)
+            .ThenBy(recipe => recipe.Season == season ? 0 : 1)
+            .ToList();
+
+        foreach (var recipe in candidates)
+        {
+            var picks = PickSeasonalMaterials(recipe);
+            if (picks == null) continue;
+
+            var target = FishCatalog.Find(recipe.Target);
+            var label = string.IsNullOrWhiteSpace(target?.Name) ? recipe.Target : target.Name;
+            _awaitingMerge = true;
+            _mergeRequestedAt = DateTime.Now;
+            _preMergeSnapshot = _lastFish;
+            _log.Write($"赛季鱼材料已齐（S{recipe.Season} → {label}），无视阈值发起合成：{string.Join(",", picks)}");
+            _client.Send("MERGE " + string.Join(" ", picks));
+            _lastActionAt = DateTime.Now;
+            return;
+        }
+    }
+
+    /// <summary>按赛季配方凑 10 条材料；凑不齐、或配方不是标准 10 格时返回 null。</summary>
+    private List<string> PickSeasonalMaterials(WikiRecipe recipe)
+    {
+        var ingredients = recipe.Ingredients ?? new List<WikiIngredient>();
+        if (ingredients.Count == 0) return null;
+        if (ingredients.Sum(i => i.Count) != 10) return null;
+
+        // 按 (鱼型, 星级) 分桶，只取可合成的鱼（无繁育次数、未锁定、未展示）
+        var pools = new Dictionary<(string Type, int Star), List<FishDto>>();
+        foreach (var fish in _lastFish ?? new List<FishDto>())
+        {
+            if (!Selection.CanMerge(fish)) continue;
+            var key = (fish.ty ?? "", fish.stars);
+            if (!pools.TryGetValue(key, out var list)) pools[key] = list = new List<FishDto>();
+            list.Add(fish);
+        }
+
+        var picks = new List<string>();
+        foreach (var ingredient in ingredients)
+        {
+            var key = (ingredient.Type ?? "", ingredient.Star);
+            if (!pools.TryGetValue(key, out var pool) || pool.Count < ingredient.Count) return null;
+            for (var i = 0; i < ingredient.Count; i++) picks.Add(pool[i].id);
+            pool.RemoveRange(0, ingredient.Count);
+        }
+        return picks.Count == 10 ? picks : null;
+    }
+
+    /// <summary>
     /// 发起一次合成。force=true 时忽略库存阈值（用户在页面上点「立即合成一次」）。
     /// 返回 false 表示没有发出去，reason 说明原因（空字符串表示只是安静地等待）。
     /// </summary>
     private bool TrySendMerge(bool force, out string reason)
     {
         reason = "";
+        if (_awaitingTradeExport) { reason = "Steam 鱼类导出正在等待游戏回报。"; return false; }
         if (_awaitingMerge) { reason = "上一笔合成还在进行中，稍候。"; return false; }
         if (!_chkMerge.Checked && !force) return false;
         if (_startupCheckPending || !_startupCheckOk)
@@ -852,7 +1146,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
             reason = "运行环境尚未就绪，暂不合成。";
             return false;
         }
-        if (!_armed || !_bridgeVersionOk || !_bridgeAllowsActions)
+        if ((_client.RequiresArm && !_armed) || !_bridgeVersionOk || !_bridgeAllowsActions)
         {
             reason = "自动合成未执行：需要先放行动作（ARM）并保持桥接连接。";
             return false;
@@ -860,7 +1154,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         if (!_client.Connected) { reason = "自动合成未执行：桥接未连接。"; return false; }
         if (_gameBusy)
         {
-            reason = "游戏正在处理请求或功能窗口正在使用，稍后再合成。";
+            reason = "游戏当前繁忙" + (string.IsNullOrWhiteSpace(_gameBusyReason) ? "" : "（" + _gameBusyReason + "）") + "，稍后再合成。";
             _nextMergeCheckAt = DateTime.Now.AddSeconds(60);
             return false;
         }
@@ -893,11 +1187,19 @@ private const string ExpectedBridgeVersion = "0.39.0";
         }
 
         var picks = Selection.PickMergeCandidates(_lastFish, 10, market,
-            _settings.AutoMergeProtectMarketPriceAboveOneYuan);
+            _settings.AutoMergeProtectMarketPriceAboveOneYuan, _settings.AutoMergeProtectionPriceYuan,
+            _settings.AutoMergePriorityMode,
+            new HashSet<int>(_settings.AutoMergeExcludedSeasons ?? new List<int>()),
+            new HashSet<string>(_settings.AutoMergeExcludedTypes ?? new List<string>(), StringComparer.OrdinalIgnoreCase),
+            WikiDatabase.RecipeFishTypes(_settings.AutoMergeExcludedRecipeSeasons));
         if (picks.Count < 10)
         {
             reason = "没有凑齐 10 条同稀有度、同星级的可合成鱼；已排除赛季鱼" +
-                     (_settings.AutoMergeProtectMarketPriceAboveOneYuan ? "及市场保护价高于 ¥1 的鱼" : "") + "，暂不合成。";
+                     (_settings.AutoMergeProtectMarketPriceAboveOneYuan
+                         ? $"及市场保护价高于 ¥{_settings.AutoMergeProtectionPriceYuan:0.00} 的鱼"
+                         : "") +
+                     (_settings.AutoMergeExcludedRecipeSeasons.Count > 0 ? "及已勾选赛季的配方鱼" : "") +
+                     "，暂不合成。";
             _nextMergeCheckAt = DateTime.Now.AddSeconds(120);
             return false;
         }
@@ -993,6 +1295,23 @@ private const string ExpectedBridgeVersion = "0.39.0";
         UpdateMergeStatus();
     }
 
+    private static string DescribeNetworkReadyReason(string reason) => reason switch
+    {
+        "steam_not_initialized" => "Steam 初始化尚未完成",
+        "game_network_type_unavailable" => "游戏网络类型未找到",
+        "game_network_manager_unavailable" => "游戏网络管理器尚未创建",
+        "transport_getter_unavailable" => "游戏网络接口尚未就绪",
+        "transport_unavailable" => "游戏网络实例尚未创建",
+        "session_field_unavailable" => "游戏会话字段不可读取",
+        "session_token_empty" => "游戏会话凭据尚未就绪（仅检查存在性，不读取或记录内容）",
+        "session_check_error" => "游戏会话检查遇到异常",
+        "network_request_busy" => "游戏正在处理网络请求",
+        "game_input_blocked" => "游戏输入被提示窗口阻塞",
+        "session_stabilizing" => "游戏会话已出现，正在等待稳定",
+        "ready" => "游戏会话已稳定",
+        _ => "未知状态（" + reason + ")"
+    };
+
     private void OnLine(string line) => Ui(() => ProcessLine(line));
 
     private void ProcessLine(string line)
@@ -1024,6 +1343,13 @@ private const string ExpectedBridgeVersion = "0.39.0";
                 _readOnlyMode = false;
                 _bridgeMinInterval = Math.Max(60, msg.minInterval);
                 _bridgeAllowsActions = msg.cfg;
+                if (!string.IsNullOrWhiteSpace(msg.mode))
+                    _log.Write($"连接方式：{_client.ModeName}" + (_client.RequiresPlugin ? "（游戏目录内有插件）" : "（不向游戏目录部署插件）"));
+                if (!_client.SupportsServerAudit)
+                {
+                    _serverInventoryReady = true;
+                    _lastServerAuditAt = DateTime.Now;
+                }
                 _log.Write($"桥接版本 {msg.ver}，最小动作间隔 {_bridgeMinInterval} 秒，" +
                            (msg.cfg ? "游戏内已放行动作" : "游戏内 cfg 尚未放行动作"));
                 if (!_bridgeVersionOk) _log.Write($"桥接版本 {msg.ver} 与控制器协议（{ExpectedBridgeVersion}）不匹配，已阻止动作。");
@@ -1042,7 +1368,9 @@ private const string ExpectedBridgeVersion = "0.39.0";
                     string.IsNullOrEmpty(_actionPauseReason))
                 {
                     SendArm(true);
-                    _log.Write("桥接版本已核实，等待服务器库存核对后放行。");
+                    _log.Write(_client.SupportsServerAudit
+                        ? "桥接版本已核实，等待服务器库存核对后放行。"
+                        : "连接已核实，放行动作。");
                 }
                 break;
 
@@ -1050,8 +1378,24 @@ private const string ExpectedBridgeVersion = "0.39.0";
                 Ui(() =>
                 {
                     _bridgeAllowsActions = !_readOnlyMode && msg.cfg;
-                    _armed = msg.armed;
+                    _armed = _client.RequiresArm ? msg.armed : string.IsNullOrWhiteSpace(_actionPauseReason);
                     _gameBusy = msg.gameBusy;
+                    _gameBusyReason = msg.networkBusy ? "游戏网络请求中"
+                        : msg.inputBlocked ? "游戏提示窗口阻塞输入"
+                        : !_client.RequiresPlugin && !msg.networkReady ? "等待助手确认游戏会话"
+                        : msg.gameBusy ? "助手动作处理中" : "";
+                    if (!_client.RequiresPlugin && _client.Connected)
+                    {
+                        var reason = msg.networkReady ? "ready" : msg.networkReadyReason ?? "unknown";
+                        if (reason != _lastNetworkReadyReason)
+                        {
+                            _lastNetworkReadyReason = reason;
+                            if (reason == "ready")
+                                _log.Write("助手已确认游戏会话稳定，允许继续游戏操作。");
+                            else
+                                _log.Write("助手连接已建立，游戏操作暂缓；会话检查状态：" + DescribeNetworkReadyReason(reason) + "。");
+                        }
+                    }
                     _serverInventoryReady = msg.serverInventoryReady;
                     _actionWaitSeconds = msg.actionWaitSeconds;
                     _actionCount = msg.actions;
@@ -1288,6 +1632,23 @@ private const string ExpectedBridgeVersion = "0.39.0";
             return;
         }
 
+        if (msg.cmd == "tradeexport")
+        {
+            _awaitingTradeExport = false;
+            _tradeExportRequestedAt = DateTime.MinValue;
+            _log.Write(msg.ok
+                ? "✓ Steam 导出已由游戏确认：" + msg.msg
+                : "Steam 导出未完成：" + msg.msg);
+            if (!msg.ok && msg.errorKind == "timeout")
+            {
+                _actionPauseReason = "Steam 导出回包超时，请核对游戏仓库与 Steam Inventory 后再继续";
+                _autoResumeAt = DateTime.MinValue;
+                if (_client.RequiresArm) SendArm(false);
+            }
+            RequestState();
+            return;
+        }
+
         if (msg.cmd == "merge")
         {
             _awaitingMerge = false;
@@ -1362,7 +1723,10 @@ private const string ExpectedBridgeVersion = "0.39.0";
             }
             if (!string.IsNullOrEmpty(msg.errorKind))
             {
-                var retryable = msg.errorKind is "transport" or "not_sent";
+                // 回包超时属于“本笔结果未知”，但连接本身还在；按瞬时失败处理后自动重试，
+                // 否则挂机时会一直停在这里等人点 ARM。
+                var retryable = msg.errorKind is "transport" or "not_sent" ||
+                                (msg.msg?.Contains("回包超时", StringComparison.Ordinal) ?? false);
                 _actionPauseReason = retryable ? "本笔已结束，等待网络恢复后重新核对" : "游戏接口或收尾异常：" + msg.msg;
                 _autoResumeAt = retryable ? DateTime.Now.AddSeconds(180) : DateTime.MinValue;
                 _serverInventoryReady = false;
@@ -1466,6 +1830,8 @@ private const string ExpectedBridgeVersion = "0.39.0";
     {
         HideGameConsoleIfNeeded();
         MaybeAutoCheckUpdate();
+        MaybeAutoRefreshMarket();
+        if (_settings.AutoSteamExport && !_marketBusy && DateTime.Now >= _nextAutoExportAt) TryAutoSteamExport();
         UpdateStatusLabels();
         UpdateWarehouseCountdowns();
         if (_breedRequest.Waiting && _breedRequest.TimedOut) RequestBreedStatus();
@@ -1544,7 +1910,23 @@ private const string ExpectedBridgeVersion = "0.39.0";
             RequestState();
         }
 
-        if (!_awaitingMerge && _settings.AutoMerge && DateTime.Now >= _nextMergeCheckAt) MaybeAutoMerge();
+        if (_awaitingTradeExport && _tradeExportRequestedAt != DateTime.MinValue &&
+            (DateTime.Now - _tradeExportRequestedAt).TotalSeconds > 90)
+        {
+            _awaitingTradeExport = false;
+            _tradeExportRequestedAt = DateTime.MinValue;
+            _actionPauseReason = "Steam 导出回包超时，请核对游戏仓库和 Steam Inventory 后再继续";
+            _autoResumeAt = DateTime.MinValue;
+            _log.Write("Steam 导出 90 秒未收到回报；暂停后续动作，请先核对游戏仓库与 Steam Inventory。");
+            RequestState();
+        }
+
+        if (!_awaitingMerge && DateTime.Now >= _nextMergeCheckAt)
+        {
+            // 赛季鱼达标优先：材料正好 10 条不会浪费，且无视仓库阈值。
+            MaybeSeasonalMergeIgnoreThreshold();
+            if (!_awaitingMerge && _settings.AutoMerge) MaybeAutoMerge();
+        }
 
         if (_roundActive)
         {
@@ -1564,16 +1946,33 @@ private const string ExpectedBridgeVersion = "0.39.0";
             return;
         }
 
-        if (!_chkAuto.Checked || _upgradePending || _awaitingUpgrade || _statePending || _serverAuditPending) return;
+        if (!_chkAuto.Checked || _upgradePending || _awaitingUpgrade || _statePending || _serverAuditPending || _gameBusy) return;
         if (!EnsureReadyForAction(quiet: true)) return;
         if (DateTime.Now >= _nextCheckAt) BeginRound();
     }
 
     private bool EnsureReadyForAction(bool quiet = false)
     {
+        if (_awaitingTradeExport)
+        {
+            if (!quiet) _log.Write("正在等待 Steam 导出的游戏回报。");
+            return false;
+        }
         if (_breedRequest.Active)
         {
             if (!quiet) _log.Write("正在核对本笔繁育结果。");
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(_actionPauseReason) &&
+            (_autoResumeAt == DateTime.MinValue || DateTime.Now < _autoResumeAt))
+        {
+            if (!quiet) _log.Write("自动操作暂停中：" + _actionPauseReason);
+            return false;
+        }
+        if (!string.IsNullOrWhiteSpace(_actionPauseReason) &&
+            (_autoResumeAt == DateTime.MinValue || DateTime.Now < _autoResumeAt))
+        {
+            if (!quiet) _log.Write("自动操作暂停中：" + _actionPauseReason);
             return false;
         }
         if (_readOnlyMode)
@@ -1596,7 +1995,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
             if (!quiet) _log.Write("桥接版本不匹配，已阻止动作。");
             return false;
         }
-        if (!_armed)
+        if (_client.RequiresArm && !_armed)
         {
             if (!quiet) _log.Write("尚未 ARM。勾选自动繁育或点 ARM 按钮。");
             return false;
@@ -1604,9 +2003,34 @@ private const string ExpectedBridgeVersion = "0.39.0";
         return true;
     }
 
+    private static string PriorityModeFromIndex(int index) => index switch
+    {
+        1 => "rarity_low",
+        2 => "stars_high",
+        3 => "stars_low",
+        _ => "rarity_high"
+    };
+
+    private static int PriorityModeIndex(string mode) => mode switch
+    {
+        "rarity_low" => 1,
+        "stars_high" => 2,
+        "stars_low" => 3,
+        _ => 0
+    };
+
+    private static string PriorityModeText(string mode) => UiLanguage.T(mode switch
+    {
+        "rarity_low" => "低稀有度优先",
+        "stars_high" => "高星级优先",
+        "stars_low" => "低星级优先",
+        _ => "高稀有度优先"
+    });
+
     private void MaybeBreed(List<FishDto> fish)
     {
         if (!_roundActive || _awaitingBreed) return;
+        if (_awaitingTradeExport) return;
         if (!EnsureReadyForAction(quiet: true))
         {
             EndRound();
@@ -1622,7 +2046,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         if (_gameBusy)
         {
             if (!_waitingForGameIdle)
-                _log.Write("游戏正在处理请求或功能窗口正在使用，等待空闲后继续本轮。");
+                _log.Write("游戏当前繁忙" + (string.IsNullOrWhiteSpace(_gameBusyReason) ? "" : "（" + _gameBusyReason + "）") + "，等待空闲后继续本轮。");
             _waitingForGameIdle = true;
             _nextActionAt = DateTime.Now.AddSeconds(60);
             return;
@@ -1635,7 +2059,8 @@ private const string ExpectedBridgeVersion = "0.39.0";
         }
 
         if (!Selection.TryPickBreedPair(fish, (int)_numMinGrade.Value, _relations, _failedPairs,
-                                       _roundAvoidedFish, _settings.GoalEnabled ? _goalPlan : null, out var a, out var b))
+                                       _roundAvoidedFish, _settings.GoalEnabled ? _goalPlan : null,
+                                       _settings.AutoBreedPriorityMode, out var a, out var b))
         {
             _log.Write("凑不出可繁殖的一对（次数耗尽、冷却中、亲缘或近期拒绝），等下一轮。");
             EndRound();
@@ -1656,7 +2081,9 @@ private const string ExpectedBridgeVersion = "0.39.0";
             return;
         }
 
-        var goalHint = _settings.GoalEnabled && _goalPlan.Enabled ? $"目标优先：{FishCatalog.Name(_goalPlan.TargetType)}" : "稀有度优先";
+        var goalHint = _settings.GoalEnabled && _goalPlan.Enabled
+            ? $"目标优先：{FishCatalog.Name(_goalPlan.TargetType)}"
+            : PriorityModeText(_settings.AutoBreedPriorityMode);
         _log.Write($"发起繁育（{goalHint}）：A={a.id} ({a.Name} {FishCatalog.RarityName(a.RarityTier)} {a.Stars}星 次数{a.bc})  " +
                    $"B={b.id} ({b.Name} {FishCatalog.RarityName(b.RarityTier)} {b.Stars}星 次数{b.bc})");
         _preBreedSnapshot = fish;
@@ -1685,7 +2112,11 @@ private const string ExpectedBridgeVersion = "0.39.0";
                            (total > _settings.AutoMergeThreshold ? "已超过阈值，可合成" : "未达阈值"));
 
         var picks = _lastFish == null ? new List<FishDto>() : Selection.PickMergeCandidates(_lastFish, 10,
-            SteamMarket.Cached, _settings.AutoMergeProtectMarketPriceAboveOneYuan);
+            SteamMarket.Cached, _settings.AutoMergeProtectMarketPriceAboveOneYuan,
+            _settings.AutoMergeProtectionPriceYuan, _settings.AutoMergePriorityMode,
+            new HashSet<int>(_settings.AutoMergeExcludedSeasons ?? new List<int>()),
+            new HashSet<string>(_settings.AutoMergeExcludedTypes ?? new List<string>(), StringComparer.OrdinalIgnoreCase),
+            WikiDatabase.RecipeFishTypes(_settings.AutoMergeExcludedRecipeSeasons));
         if (_lastFish == null)
         {
             _lblMergePlan.Text = UiLanguage.T("候选：等待鱼群数据…");
@@ -1696,7 +2127,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         }
         else if (picks.Count < 10)
         {
-            _lblMergePlan.Text = UiLanguage.T("候选：不足 10 条同稀有度、同星级鱼，或市场价保护正在生效。");
+            _lblMergePlan.Text = UiLanguage.T("候选：不足 10 条同稀有度、同星级鱼，或市场价/赛季/配方排除规则正在生效。");
         }
         else
         {
@@ -1716,12 +2147,13 @@ private const string ExpectedBridgeVersion = "0.39.0";
     private void UpdateStatusLabels()
     {
         _lblProcess.Text = UiLanguage.T("游戏进程：" + GameProcess.Describe());
+        UpdateGameWindowButton();
 
         if (_client.Connected)
         {
             var yes = UiLanguage.T("是");
             var no = UiLanguage.T("否");
-            _lblBridge.Text = UiLanguage.T($"桥接连接：已连接 127.0.0.1:{_settings.Port}   " +
+            _lblBridge.Text = UiLanguage.T($"{_client.ModeName}：已连接   " +
                                $"版本={(_bridgeVersionOk ? "匹配" : "待更新")}   放行={(_bridgeAllowsActions ? yes : no)}   " +
                               $"ARM={(_armed ? yes : no)}   累计动作={_actionCount}");
             if (_windowLocked)
@@ -1731,7 +2163,7 @@ private const string ExpectedBridgeVersion = "0.39.0";
         }
         else
         {
-            _lblBridge.Text = UiLanguage.T($"桥接连接：未连接（正在重试 127.0.0.1:{_settings.Port}）");
+            _lblBridge.Text = UiLanguage.T($"{_client.ModeName}：未连接（正在重试）");
         }
 
         if (_startupCheckPending)

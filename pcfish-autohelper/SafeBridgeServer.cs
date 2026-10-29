@@ -171,6 +171,13 @@ internal static class BridgeServer
     {
         try
         {
+            // 插件只允许本机控制器和浏览器预检接入；不接受来自局域网或其它主机的命令。
+            var remote = client.Tcp.Client?.RemoteEndPoint as System.Net.IPEndPoint;
+            if (remote == null || !System.Net.IPAddress.IsLoopback(remote.Address))
+            {
+                Journal.Write("拒绝非本机桥接连接：" + remote);
+                return;
+            }
             using var reader = new StreamReader(client.Tcp.GetStream(), new UTF8Encoding(false));
             string line;
             while (client.Alive != 0 && (line = reader.ReadLine()) != null)
@@ -396,9 +403,8 @@ internal static class BridgeServer
     }
 
     /// <summary>
-    /// 后台自动合成：按真实点击顺序驱动合成窗口。
-    ///   打开功能窗口 → 切到合成标签 → 逐条放鱼 → 点合成 → 等动画 → 关闭结果弹窗。
-    /// 每一步都在游戏主线程里执行，步骤之间留出间隔，避免一次灌进太多操作。
+    /// 后台自动合成：使用隐藏合成对象准备鱼 ID，调用游戏原生入口发送请求，
+    /// 再通过鱼群变化核对回包结果；整个过程不打开功能窗口。
     /// </summary>
     private static void Merge(Request request)
     {
@@ -439,62 +445,67 @@ internal static class BridgeServer
             Reply(request, "merge", ok, false, "", message, kind);
         }, before);
 
-        // 串行执行：每一步完成后才进入下一步，保证关闭弹窗一定在关闭窗口之前。
-        // 打开窗口 -> 清空 -> 逐条点“+”放鱼 -> 点合成 -> 等动画 -> 关结果弹窗 -> 关窗口。
-        Step(0.4, OpenWindow);
+        // 合成对象已在游戏启动时创建并保持隐藏；直接准备 ID 列表并发送原生请求。
+        Step(0.1, PrepareRequest);
 
         void Step(double delay, Action next)
             => GameBridge.RunOnMainThreadAfter(delay, SafeStep(next));
 
-        void OpenWindow()
-        {
-            state.Opened = MergeBridge.OpenMergeWindow(out var openDetail);
-            state.Log(openDetail);
-            if (!state.Opened) { state.Finish(false, openDetail); return; }
-            Step(0.8, ResetSlots);
-        }
-
-        void ResetSlots()
+        void PrepareRequest()
         {
             var found = MergeBridge.Find();
-            if (found == null) { state.Finish(false, "找不到合成面板"); return; }
+            if (found == null) { state.Finish(false, "隐藏的合成对象尚未创建；未打开功能窗口，也未发送请求"); return; }
             state.Ui = found;
-            MergeBridge.ClearParents(found, out var clearDetail);
+            if (!MergeBridge.ClearParents(found, out var clearDetail))
+            {
+                state.Finish(false, clearDetail);
+                return;
+            }
             state.Log(clearDetail);
-            Step(0.4, () => FillOne(0));
+            foreach (var id in request.Args)
+            {
+                if (!MergeBridge.AddParent(found, id, out var addDetail))
+                {
+                    state.Placed = MergeBridge.FilledCount(found);
+                    state.Log($"已准备鱼 ID {state.Placed}/{request.Args.Length}");
+                    state.Finish(false, addDetail.Length > 0 ? addDetail : "鱼未被游戏接受");
+                    return;
+                }
+            }
+            state.Placed = MergeBridge.FilledCount(found);
+            state.Log($"已准备鱼 ID {state.Placed}/{request.Args.Length}");
+            if (state.Placed != MergeBridge.RequiredCount) { state.Finish(false, "合成材料数量不足"); return; }
+            Step(0.1, SendMergeRequest);
         }
 
-        // 每 150 毫秒放一条鱼，模拟人手逐次点“+”。放完 10 条就点合成。
-        void FillOne(int index)
+        void SendMergeRequest()
         {
             if (state.Ui == null) { state.Finish(false, "合成面板丢失"); return; }
-            if (index >= request.Args.Length)
-            {
-                state.Placed = MergeBridge.FilledCount(state.Ui);
-                state.Log($"已放鱼 {state.Placed}/{request.Args.Length}");
-                if (state.Placed != MergeBridge.RequiredCount) { state.Finish(false, "放鱼数量不足"); return; }
-                Step(0.5, ClickMerge);
-                return;
-            }
-            var placed = MergeBridge.AddParent(state.Ui, request.Args[index], out var addDetail);
-            if (!placed)
-            {
-                state.Log(addDetail.Length > 0 ? addDetail : $"第 {index + 1} 条未被接受");
-                state.Placed = MergeBridge.FilledCount(state.Ui);
-                state.Log($"已放鱼 {state.Placed}/{request.Args.Length}");
-                state.Finish(false, "有鱼未被合成窗口接受");
-                return;
-            }
-            Step(0.15, () => FillOne(index + 1));
-        }
-
-        void ClickMerge()
-        {
-            if (state.Ui == null) { state.Finish(false, "合成面板丢失"); return; }
-            var clicked = MergeBridge.ClickMerge(state.Ui, out var clickDetail);
-            state.Log(clickDetail);
-            if (!clicked) { state.Finish(false, clickDetail); return; }
+            var sent = MergeBridge.SendMergeRequest(state.Ui, out var sendDetail);
+            state.Log(sendDetail);
+            if (!sent) { state.Finish(false, sendDetail); return; }
             Step(0.8, () => WatchResult(0));
+        }
+
+        bool InventoryChanged(out string detail)
+        {
+            detail = "鱼群变化未核实";
+            try
+            {
+                GameBridge.TryGetDataManager(out var dmAfter);
+                var after = dmAfter == null ? null : GameBridge.Snapshot(dmAfter);
+                var beforeIds = new HashSet<string>(before.ConvertAll(f => f.Id));
+                var consumed = after != null && Array.TrueForAll(request.Args, id => !after.Exists(f => f.Id == id));
+                var gained = after != null && after.Exists(f => !beforeIds.Contains(f.Id));
+                detail = $"鱼 {before.Count}→{after?.Count ?? -1}";
+                return consumed || gained;
+            }
+            catch (Exception ex)
+            {
+                Journal.Error("读取合成回报失败", ex);
+                detail = "读取合成回报失败：" + ex.GetBaseException().Message;
+                return false;
+            }
         }
 
         // 每 350~400 毫秒看一次：结果弹窗一出现就关掉；弹窗还没出现就先等动画播完。
@@ -513,6 +524,14 @@ internal static class BridgeServer
                         Journal.Write("后台合成：" + dismiss);
                         state.GameErrorSeen = true;
                     }
+                }
+                if (InventoryChanged(out var inventoryDetail))
+                {
+                    state.Log("收到鱼群变化回报：" + inventoryDetail);
+                    var closeDetail = MergeBridge.CloseResult(state.Ui);
+                    state.Log("结果收尾：" + closeDetail);
+                    Step(0.1, CloseUp);
+                    return;
                 }
                 // 结果弹窗优先：只要它显示着就关掉，不等动画标志。
                 // 动画标志偶尔会滞后，先看弹窗才能保证它一定被关掉。
@@ -553,7 +572,7 @@ internal static class BridgeServer
 
         void CloseUp()
         {
-            // 收尾保险：关窗口之前再确认一次结果弹窗已经关掉，免得它留在屏幕上。
+            // 收尾保险：再确认一次结果弹窗已关闭；功能窗口从未打开。
             try
             {
                 if (state.Ui != null && MergeBridge.ResultOpen(state.Ui))
@@ -564,27 +583,20 @@ internal static class BridgeServer
                 }
             }
             catch (Exception ex) { Journal.Error("收尾补关结果弹窗失败", ex); }
-            try { MergeBridge.CloseWindow(); state.Log("已关闭功能窗口"); }
-            catch (Exception ex) { Journal.Error("关闭功能窗口失败", ex); }
+            // 只清空隐藏合成对象的选中 ID，保留用户当前的游戏页面和窗口状态。
+            try
+            {
+                if (state.Ui != null && MergeBridge.ClearParents(state.Ui, out var clearDetail))
+                    state.Log("已清空隐藏合成槽位：" + clearDetail);
+            }
+            catch (Exception ex) { Journal.Error("清理隐藏合成槽位失败", ex); }
             Step(0.4, Verify);
         }
 
         void Verify()
         {
-            var changed = false;
-            var detail = "鱼群变化未核实";
-            try
-            {
-                GameBridge.TryGetDataManager(out var dmAfter);
-                var after = dmAfter == null ? null : GameBridge.Snapshot(dmAfter);
-                var beforeIds = new HashSet<string>(before.ConvertAll(f => f.Id));
-                var consumed = after != null && Array.TrueForAll(request.Args, id => !after.Exists(f => f.Id == id));
-                var gained = after != null && after.Exists(f => !beforeIds.Contains(f.Id));
-                changed = consumed || gained;
-                detail = $"鱼 {before.Count}→{after?.Count ?? -1}";
-                Journal.Write($"后台合成对账：提交 {request.Args.Length} 条 本笔核实={changed} {detail}");
-            }
-            catch (Exception ex) { Journal.Error("合成对账失败", ex); }
+            var changed = InventoryChanged(out var detail);
+            Journal.Write($"后台合成对账：提交 {request.Args.Length} 条 本笔核实={changed} {detail}");
             var warned = ReviewWindow("merge", _preActionWindow);
             state.Finish(changed,
                 (changed ? "合成已确认" : "合成回包后鱼群未核实") + "；" + detail +

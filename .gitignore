@@ -3,6 +3,7 @@ bin/
 obj/
 publish/
 dist/
+artifacts/
 release/
 *.pdb
 
@@ -13,6 +14,7 @@ PCFish控制器.crash.log
 PCFish亲缘关系.json
 PCFish失败配对.json
 PCFish Wiki数据库.json
+PCFish市场报价缓存.json
 PCFishAutoHelper.log
 
 # 备份与本地工具

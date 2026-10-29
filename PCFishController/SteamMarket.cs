@@ -60,12 +60,55 @@ internal static class SteamMarket
         "https://steamcommunity.com/market/search/render/?appid=" + AppId +
         "&norender=1&count={0}&start={1}&currency={2}";
 
-    private static readonly TimeSpan CacheLifetime = TimeSpan.FromMinutes(30);
-
     private static MarketLookupResult _cache;
+    private static TimeSpan _cacheLifetime = TimeSpan.FromMinutes(60);
+    private static string _cacheFilePath = Path.Combine(AppContext.BaseDirectory, "PCFish市场报价缓存.json");
 
     internal static MarketLookupResult Cached =>
-        _cache != null && DateTime.Now - _cache.FetchedAt < CacheLifetime ? _cache : null;
+        _cache != null && DateTime.Now - _cache.FetchedAt < _cacheLifetime ? _cache : null;
+    internal static MarketLookupResult LastCached => _cache;
+    internal static bool IsBusy { get; private set; }
+
+    internal static void ConfigureCache(int refreshMinutes, string path = null)
+    {
+        _cacheLifetime = TimeSpan.FromMinutes(Math.Clamp(refreshMinutes, 15, 1440));
+        if (!string.IsNullOrWhiteSpace(path)) _cacheFilePath = path;
+        LoadCache();
+    }
+
+    internal static void LoadCache()
+    {
+        if (!File.Exists(_cacheFilePath)) return;
+        try
+        {
+            var dto = JsonSerializer.Deserialize<MarketCacheDto>(File.ReadAllText(_cacheFilePath));
+            if (dto == null || dto.Version != 1 || dto.Quotes == null || dto.Quotes.Count == 0) return;
+            var loaded = new MarketLookupResult
+            {
+                Ok = true,
+                Message = "已读取本地 Steam 市场报价缓存。",
+                FetchedAt = dto.FetchedAt == default ? File.GetLastWriteTime(_cacheFilePath) : dto.FetchedAt,
+                TotalItems = dto.TotalItems > 0 ? dto.TotalItems : dto.Quotes.Count
+            };
+            foreach (var row in dto.Quotes)
+            {
+                if (string.IsNullOrWhiteSpace(row.HashName)) continue;
+                loaded.ByKey[MarketLookupResult.Key(row.PlainName, row.Stars)] = new MarketQuote
+                {
+                    HashName = row.HashName,
+                    Lowest = row.Lowest,
+                    PriceText = row.PriceText ?? "",
+                    HighestBuy = row.HighestBuy,
+                    BuyText = row.BuyText ?? "",
+                    RecentSaleMedian = row.RecentSaleMedian,
+                    Sold = row.Sold,
+                    Listed = row.Listed
+                };
+            }
+            if (loaded.ByKey.Count > 0) _cache = loaded;
+        }
+        catch { /* Keep the current cache if the file is stale or malformed. */ }
+    }
 
     /// <summary>人民币的价格代码，steam 用 currency=23 表示 CNY。</summary>
     internal const int CurrencyCny = 23;
@@ -83,6 +126,12 @@ internal static class SteamMarket
     internal static async Task<MarketLookupResult> FetchAsync(int currency, Action<string> report = null)
     {
         var result = new MarketLookupResult();
+        if (IsBusy)
+        {
+            result.Message = "Steam 市场报价查询正在进行。";
+            return result;
+        }
+        IsBusy = true;
         // 直接用结果里的字典，别再建一个局部副本——之前就是漏了这一步，
         // 导致 TotalItems 有值但 ByKey 是空的，一条都匹配不上。
         var quotes = result.ByKey;
@@ -92,6 +141,11 @@ internal static class SteamMarket
             var total = -1;
             var start = 0;
             var searchComplete = false;
+            // Steam 的搜索结果在分页之间会因新上架/成交而轻微重排，页边界偶尔会出现
+            // 重复物品，整页都可能没有任何新键。之前遇到这种页就直接判失败，
+            // 于是每轮自动合成都会卡在「翻页未返回新报价」。
+            // 现在允许连续 3 页没有新报价，仍然按返回条数推进偏移。
+            var stalePages = 0;
             // 实测 Steam 的 search/render 每次最多返回 10 条，count 传更大也没用，
             // 所以按「实际返回多少条」推进偏移，否则会跳过中间的物品。
             const int pageSize = 100;
@@ -153,8 +207,17 @@ internal static class SteamMarket
                 }
                 if (quotes.Count == before)
                 {
-                    result.Message = "Steam 市场翻页未返回新报价，完整扫描失败。";
-                    return result;
+                    stalePages++;
+                    if (stalePages >= 3)
+                    {
+                        // 继续往下翻：重复页之后再往后通常还能读到新物品，
+                        // 直接判失败会让所有受保护的自动合成停摆。
+                        report?.Invoke($"Steam 市场第 {page + 1} 页没有新报价，继续翻页…");
+                    }
+                }
+                else
+                {
+                    stalePages = 0;
                 }
             }
 
@@ -176,7 +239,11 @@ internal static class SteamMarket
             result.FetchedAt = DateTime.Now;
             var withRecentSales = quotes.Values.Count(quote => quote.RecentSaleMedian.HasValue);
             result.Message = $"已获取 {quotes.Count} 条 Steam 市场报价，读取到 {withRecentSales} 条近期成交中位价。";
-            if (result.Ok) _cache = result;
+            if (result.Ok)
+            {
+                _cache = result;
+                SaveCache(result);
+            }
             return result;
         }
         catch (Exception ex)
@@ -184,6 +251,59 @@ internal static class SteamMarket
             result.Message = "Steam 市场查询失败：" + ex.Message;
             return result;
         }
+        finally { IsBusy = false; }
+    }
+
+    private static void SaveCache(MarketLookupResult result)
+    {
+        try
+        {
+            var dto = new MarketCacheDto
+            {
+                Version = 1,
+                FetchedAt = result.FetchedAt,
+                TotalItems = result.TotalItems,
+                Quotes = result.ByKey.Select(pair => new MarketQuoteDto
+                {
+                    PlainName = pair.Key[..pair.Key.LastIndexOf('|')],
+                    Stars = int.TryParse(pair.Key[(pair.Key.LastIndexOf('|') + 1)..], out var stars) ? stars : 0,
+                    HashName = pair.Value.HashName,
+                    Lowest = pair.Value.Lowest,
+                    PriceText = pair.Value.PriceText,
+                    HighestBuy = pair.Value.HighestBuy,
+                    BuyText = pair.Value.BuyText,
+                    RecentSaleMedian = pair.Value.RecentSaleMedian,
+                    Sold = pair.Value.Sold,
+                    Listed = pair.Value.Listed
+                }).ToList()
+            };
+            File.WriteAllText(_cacheFilePath, JsonSerializer.Serialize(dto, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { /* Market scans remain usable if local cache persistence fails. */ }
+    }
+
+    private sealed class MarketCacheDto
+    {
+        public MarketCacheDto() { }
+        public int Version { get; set; }
+        public DateTime FetchedAt { get; set; }
+        public int TotalItems { get; set; }
+        public List<MarketQuoteDto> Quotes { get; set; } = new();
+    }
+
+    private sealed class MarketQuoteDto
+    {
+        public MarketQuoteDto() { }
+        public string PlainName { get; set; } = "";
+        public int Stars { get; set; }
+        public string HashName { get; set; } = "";
+        public decimal Lowest { get; set; }
+        public string PriceText { get; set; } = "";
+        public decimal HighestBuy { get; set; }
+        public string BuyText { get; set; } = "";
+        public decimal? RecentSaleMedian { get; set; }
+        public int Sold { get; set; }
+        public int Listed { get; set; }
     }
 
     private static async Task FetchRecentSaleMediansAsync(HttpClient client, List<MarketQuote> quotes, Action<string> report)

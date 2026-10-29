@@ -37,7 +37,7 @@ internal static class StartupCheck
 {
     private const string AllowActionsKey = "允许外部执行动作";
 
-    internal static StartupCheckResult Run(string preferredGameDir)
+    internal static StartupCheckResult Run(string preferredGameDir, bool requiresPlugin = true)
     {
         var result = new StartupCheckResult();
         void Fail(string summary, string reason, bool fixable = true)
@@ -58,6 +58,25 @@ internal static class StartupCheck
         }
         result.GameDir = gameDir;
         result.Details.Add("游戏目录：" + gameDir);
+
+        if (!requiresPlugin)
+        {
+            // Frida 内存连接只需要游戏目录和一个可附加的进程；不检查 BepInEx 和插件。
+            result.Details.Add("连接方式：Frida 内存连接（不部署插件）");
+            var process = GameProcess.Find();
+            if (process == null)
+            {
+                result.Details.Add("游戏进程：未运行（启动后会自动附加）");
+                result.Ok = true;
+                result.Summary = "游戏尚未启动；助手会等游戏进程启动 60 秒，并确认登录网络稳定后再附加。";
+                return result;
+            }
+            try { result.Details.Add("游戏进程：PID " + process.Id); }
+            finally { process.Dispose(); }
+            result.Ok = true;
+            result.Summary = "游戏进程已运行；Frida 会等启动阶段结束并确认登录网络稳定后再执行操作。";
+            return result;
+        }
 
         // ---------- 2. BepInEx 运行环境 ----------
         if (!BepInExInstaller.IsInstalled(gameDir))

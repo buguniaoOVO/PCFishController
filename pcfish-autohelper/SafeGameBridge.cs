@@ -60,7 +60,10 @@ internal static class GameBridge
     internal readonly struct InteractionState
     {
         internal readonly bool InputBlocked, NetworkBusy, WindowOpen, Processing;
-        internal bool Busy => InputBlocked || NetworkBusy || WindowOpen || Processing;
+        // isProcessing 是游戏自己给切换菜单用的标志，合成/繁育直接走数据入口时它可能在
+        // 收尾后仍停在 true（实测会一直为 true）。把它当忙会让人误以为游戏卡住，
+        // 自动流程每轮都被“游戏正在处理请求”挡住。这里只保留真正会阻塞原生调用的三项。
+        internal bool Busy => InputBlocked || NetworkBusy || WindowOpen;
         internal InteractionState(bool input, bool network, bool window, bool processing)
         { InputBlocked = input; NetworkBusy = network; WindowOpen = window; Processing = processing; }
         internal string Describe() =>
@@ -91,7 +94,6 @@ internal static class GameBridge
         var state = ReadInteractionState();
         if (state.NetworkBusy) return "游戏网络请求尚未完成，等待回包";
         if (state.InputBlocked) return "游戏输入仍被原生流程锁定，等待收尾";
-        if (state.Processing) return "游戏界面正在处理操作，稍后再试";
         if (state.WindowOpen) return "游戏功能窗口正在使用，关闭后再进行自动操作";
         return "";
     }

@@ -8,6 +8,8 @@ internal sealed class BridgeMessage
 {
     public string type { get; set; }
     public string ver { get; set; }
+    /// <summary>连接方式标识：hello 报文里的 "frida" 表示内存连接。</summary>
+    public string mode { get; set; }
     public string apiStatus { get; set; }
     public int port { get; set; }
     public int minInterval { get; set; }
@@ -24,6 +26,8 @@ internal sealed class BridgeMessage
     public bool gameBusy { get; set; }
     public bool inputBlocked { get; set; }
     public bool networkBusy { get; set; }
+    public bool networkReady { get; set; }
+    public string networkReadyReason { get; set; } = "";
     public bool functionWindowOpen { get; set; }
     public bool serverInventoryReady { get; set; }
     public int actionWaitSeconds { get; set; }
@@ -140,43 +144,55 @@ internal static class Selection
     internal static bool CanMerge(FishDto f) => f.bc <= 0 && !f.lk && !f.pl;
 
     /// <summary>
-    /// 自动合成按稀有度和星级分组，每次只选满一组；高稀有度优先。
-    /// 赛季鱼始终排除，赛季配方材料可以参与普通合成。
+    /// 自动合成按稀有度和星级分组，每次只选满一组；组的稀有度顺序由用户设置。
+    /// 被勾选的赛季鱼、以及用户单独排除的鱼种不参与合成。
     /// </summary>
     internal static List<FishDto> PickMergeCandidates(List<FishDto> fish, int count,
-        MarketLookupResult market, bool protectMarketPrice)
+        MarketLookupResult market, bool protectMarketPrice, decimal protectionPriceYuan,
+        string priorityMode, IReadOnlySet<int> excludedSeasons = null,
+        IReadOnlySet<string> excludedTypes = null, IReadOnlySet<string> excludedRecipeTypes = null)
     {
         if (fish == null || count <= 0) return new List<FishDto>();
+        excludedSeasons ??= new HashSet<int>();
+        excludedTypes ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        excludedRecipeTypes ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         var eligible = fish
             .Where(f => f != null && !f.lk && !f.pl && f.bc <= 0)
-            .Where(f => FishCatalog.Find(f.ty)?.Season is not > 0)
-            .Where(f => !protectMarketPrice || !IsAboveMarketThreshold(f, market))
+            .Where(f => !excludedTypes.Contains(f.ty ?? ""))
+            .Where(f => !excludedRecipeTypes.Contains(f.ty ?? ""))
+            .Where(f => !excludedSeasons.Contains(FishCatalog.Find(f.ty)?.Season ?? 0))
+            .Where(f => !protectMarketPrice || !IsAboveMarketThreshold(f, market, protectionPriceYuan))
             .ToList();
 
-        return eligible
+        var groups = eligible
             .GroupBy(f => (Rarity: f.RarityTier, Stars: f.Stars))
-            .Where(group => group.Key.Stars >= 1 && group.Count() >= count)
-            .OrderByDescending(group => group.Key.Rarity)
-            .ThenByDescending(group => group.Key.Stars)
+            .Where(group => group.Key.Stars >= 1 && group.Count() >= count);
+        var orderedGroups = priorityMode switch
+        {
+            "rarity_low" => groups.OrderBy(group => group.Key.Rarity).ThenByDescending(group => group.Key.Stars),
+            "stars_high" => groups.OrderByDescending(group => group.Key.Stars).ThenByDescending(group => group.Key.Rarity),
+            "stars_low" => groups.OrderBy(group => group.Key.Stars).ThenByDescending(group => group.Key.Rarity),
+            _ => groups.OrderByDescending(group => group.Key.Rarity).ThenByDescending(group => group.Key.Stars)
+        };
+
+        return orderedGroups
             .Select(group => group.OrderBy(f => f.bc).Take(count).ToList())
             .FirstOrDefault() ?? new List<FishDto>();
     }
 
-    private static bool IsAboveMarketThreshold(FishDto fish, MarketLookupResult market)
+    private static bool IsAboveMarketThreshold(FishDto fish, MarketLookupResult market, decimal protectionPriceYuan)
     {
         var name = FishCatalog.EnglishName(fish.ty);
         var quote = market?.Find(name, fish.Stars);
-        return quote != null && quote.MergeProtectionPrice > 1m;
+        // Unknown market mappings stay protected until a quote can be matched.
+        return quote == null || quote.MergeProtectionPrice > protectionPriceYuan;
     }
 
     /// <summary>
     /// 繁殖：挑两条还有繁殖次数、且已过冷却的鱼。
     ///
-    /// **优先用高级的鱼** —— 这是用户明确要求的第一优先级：
-    ///   1. 稀有度 G 降序（越高级越先用）
-    ///   2. 等级 Lv 降序（同级里先用练过的）
-    ///   3. 剩余繁殖次数 降序（次数多的先消耗，保留次数少的做后手）
+    /// 稀有度顺序由用户设置；同稀有度内优先等级较高、繁育次数较多的鱼。
     ///
     /// relations：亲缘图谱。服务端会拒绝直系亲子繁育（实测），有边就跳过。
     /// 半姐妹/半兄弟（只共享一个亲）实测允许，不拦。
@@ -186,30 +202,45 @@ internal static class Selection
     /// </summary>
     internal static bool TryPickBreedPair(List<FishDto> fish, int minGrade, RelationStore relations,
         FailedPairStore failedPairs, IReadOnlySet<string> avoidedFishIds, GoalPlan goalPlan,
-        out FishDto first, out FishDto second)
+        string priorityMode, out FishDto first, out FishDto second)
     {
         first = second = null;
         if (fish == null) return false;
 
-        var candidates = fish
+        var candidatesByGoal = fish
             .Where(f => CanBreed(f) && f.RarityTier >= minGrade && IsOffCooldown(f) &&
                         (avoidedFishIds == null || !avoidedFishIds.Contains(f.id)))
             .OrderByDescending(f => goalPlan?.Score(f) ?? 0)
-            .ThenByDescending(f => f.RarityTier)
-            .ThenByDescending(f => f.Stars)
-            .ThenByDescending(f => f.bc)
             .ToList();
+        IOrderedEnumerable<FishDto> ApplyPriority(IEnumerable<FishDto> source)
+            => priorityMode switch
+            {
+                "rarity_low" => source.OrderByDescending(f => goalPlan?.Score(f) ?? 0).ThenBy(f => f.RarityTier).ThenByDescending(f => f.Stars).ThenByDescending(f => f.bc),
+                "stars_high" => source.OrderByDescending(f => goalPlan?.Score(f) ?? 0).ThenByDescending(f => f.Stars).ThenByDescending(f => f.RarityTier).ThenByDescending(f => f.bc),
+                "stars_low" => source.OrderByDescending(f => goalPlan?.Score(f) ?? 0).ThenBy(f => f.Stars).ThenByDescending(f => f.RarityTier).ThenByDescending(f => f.bc),
+                _ => source.OrderByDescending(f => goalPlan?.Score(f) ?? 0).ThenByDescending(f => f.RarityTier).ThenByDescending(f => f.Stars).ThenByDescending(f => f.bc)
+            };
+
+        var candidates = ApplyPriority(candidatesByGoal).ToList();
 
         if (candidates.Count < 2) return false;
         var preferred = failedPairs == null ? candidates :
             candidates.Where(f => !failedPairs.IsFishBlocked(f)).ToList();
-        var fallback = failedPairs == null ? candidates : candidates
-            .OrderBy(f => failedPairs.FailureCount(f))
-            .ThenByDescending(f => goalPlan?.Score(f) ?? 0)
-            .ThenByDescending(f => f.RarityTier)
-            .ThenByDescending(f => f.Stars)
-            .ThenByDescending(f => f.bc)
-            .ToList();
+        var fallback = candidates;
+        if (failedPairs != null)
+        {
+            fallback = priorityMode switch
+            {
+                "rarity_low" => candidates.OrderBy(f => failedPairs.FailureCount(f)).ThenByDescending(f => goalPlan?.Score(f) ?? 0)
+                    .ThenBy(f => f.RarityTier).ThenByDescending(f => f.Stars).ThenByDescending(f => f.bc).ToList(),
+                "stars_high" => candidates.OrderBy(f => failedPairs.FailureCount(f)).ThenByDescending(f => goalPlan?.Score(f) ?? 0)
+                    .ThenByDescending(f => f.Stars).ThenByDescending(f => f.RarityTier).ThenByDescending(f => f.bc).ToList(),
+                "stars_low" => candidates.OrderBy(f => failedPairs.FailureCount(f)).ThenByDescending(f => goalPlan?.Score(f) ?? 0)
+                    .ThenBy(f => f.Stars).ThenByDescending(f => f.RarityTier).ThenByDescending(f => f.bc).ToList(),
+                _ => candidates.OrderBy(f => failedPairs.FailureCount(f)).ThenByDescending(f => goalPlan?.Score(f) ?? 0)
+                    .ThenByDescending(f => f.RarityTier).ThenByDescending(f => f.Stars).ThenByDescending(f => f.bc).ToList()
+            };
+        }
         // 优先避开近期反复失败的鱼；若剩下的鱼凑不出配对，仍尝试未被记录为失败的其他配对。
         foreach (var pool in new[] { preferred, fallback })
         {

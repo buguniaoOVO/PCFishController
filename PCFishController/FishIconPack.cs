@@ -4,9 +4,9 @@ using System.Text.Json;
 namespace PCFishController;
 
 /// <summary>
-/// 鱼图。图来自游戏自带的 AtlasFish 图集，构建时把整张图集和每个精灵的矩形
-/// 一起放到助手目录：fish-icons.png 与 fish-icons.json。
-/// 运行时按鱼的 sp（形如 FS00024_03_02_03）裁出那一块，不缩放、不补边。
+/// 鱼图。构建时从游戏 AtlasFish 解码每张 Sprite.image，再排成稳定的像素网格，
+/// 连同精灵矩形一起放到助手目录：fish-icons.png 与 fish-icons.json。
+/// 运行时按鱼的 sp（形如 FS00024_03_02_03）裁切，避开 Unity atlas 的旋转/翻转坐标。
 ///
 /// 找不到文件时整个功能降级为「不显示图」，不影响其它功能。
 /// </summary>
@@ -115,5 +115,27 @@ internal static class FishIconPack
         {
             return null;
         }
+    }
+
+    /// <summary>取得鱼种图标，排除列表等没有库存实例的场景使用首个 AtlasFish 精灵。</summary>
+    internal static Bitmap GetForType(string type, int preferredStar = 1)
+    {
+        if (string.IsNullOrWhiteSpace(type)) return null;
+        Load();
+        if (_rects == null) return null;
+        var prefix = type.Trim() + "_";
+        var match = _rects.Keys
+            .Where(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(key => ParseSpritePart(key, 2) == preferredStar ? 0 : 1)
+            .ThenBy(key => ParseSpritePart(key, 2))
+            .ThenBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        return match == null ? null : Get(match);
+    }
+
+    private static int ParseSpritePart(string sprite, int index)
+    {
+        var parts = sprite.Split('_');
+        return parts.Length > index && int.TryParse(parts[index], out var value) ? value : int.MaxValue;
     }
 }

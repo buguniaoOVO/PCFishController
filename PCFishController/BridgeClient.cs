@@ -6,7 +6,7 @@ namespace PCFishController;
 /// <summary>
 /// 连到游戏内桥接的 TCP 客户端。自己管重连，断了不弹错，隔 2 秒再试。
 /// </summary>
-internal sealed class BridgeClient : IDisposable
+internal sealed class BridgeClient : IGameBridge
 {
     private readonly string _host;
     private readonly int _port;
@@ -20,10 +20,15 @@ internal sealed class BridgeClient : IDisposable
     /// <summary>为 null 表示随时可连；返回 false 时跳过本轮连接尝试。</summary>
     private Func<bool> _allowConnect;
 
-    internal bool Connected => _connected;
+    public bool Connected => _connected;
+    public string ModeName => "插件桥接";
+    public string ProtocolLabel => "插件桥接";
+    public bool RequiresPlugin => true;
+    public bool RequiresArm => true;
+    public bool SupportsServerAudit => true;
 
-    internal event Action<bool> ConnectionChanged;
-    internal event Action<string> LineReceived;
+    public event Action<bool> ConnectionChanged;
+    public event Action<string> LineReceived;
 
     internal BridgeClient(string host, int port)
     {
@@ -35,7 +40,7 @@ internal sealed class BridgeClient : IDisposable
     /// 启动重连线程。allowConnect 返回 false 时表示「暂时不允许连接」——线程照常起来，
     /// 但不建连接。开机自检通过后返回 true，下一次轮询就会立刻连上。
     /// </summary>
-    internal void Start(Func<bool> allowConnect = null)
+    public void Start(Func<bool> allowConnect = null)
     {
         _allowConnect = allowConnect;
         _wanted = true;
@@ -44,7 +49,7 @@ internal sealed class BridgeClient : IDisposable
         _thread.Start();
     }
 
-    internal void Send(string line)
+    public void Send(string line)
     {
         try
         {

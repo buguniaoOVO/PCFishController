@@ -49,6 +49,14 @@ internal static class FishCatalog
         new("FS00033", "霜蓝翻车鱼", 3, 0, 1),
         new("FS00034", "青柠背海龟", 4, 0, 1),
         new("FS00035", "祭典章鱼", 5, 0, 1),
+        new("FS00036", "怨灵金鱼", 3, 1, 0),
+        new("FS00037", "血月噬梦翻车鱼", 4, 3, 0),
+        new("FS00038", "南瓜鬼灯鮟鱇鱼", 3, 0, 2),
+        new("FS00039", "缝合怪鱼", 4, 0, 2),
+        new("FS00040", "鬼火灯笼水母", 5, 0, 2),
+        new("FS00041", "霜刃", 1, 3, 0),
+        new("FS00042", "旭日旋纹", 2, 2, 0),
+        new("FS00043", "像素鲈", 3, 2, 0),
     };
 
     private static readonly List<FishSpecies> SpeciesList = All.ToList();

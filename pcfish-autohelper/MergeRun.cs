@@ -11,7 +11,6 @@ internal sealed class MergeRun
     internal readonly List<FishInfo> Before;
     internal readonly List<string> Steps = new();
     internal UIMerge Ui;
-    internal bool Opened;
     internal int Placed;
     /// <summary>等待结果期间见到过游戏自己的错误提示弹窗（例如「发生网络错误」）。</summary>
     internal bool GameErrorSeen;
