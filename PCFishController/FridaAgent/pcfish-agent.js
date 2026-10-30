@@ -196,6 +196,21 @@ const uiBreedClass = () => cls("NN.PF.UI.Breed", "UIBreed");
 const uiManagerClass = () => cls("NN.PF.Core.Managers", "UIManager");
 const confirmClass = () => cls("NN.PF.UI.Confirm", "UIConfirm");
 const fishModelClass = () => cls("NN.PF.Models", "FishModel");
+// 「发现新鱼！」结果面板。之前用 tmpClass（Unity.TextMeshPro 程序集）取这个类，
+// classFromName 永远返回 NULL，Confirm 一次都没真正执行过 —— 结果面板就一直挂在
+// 屏幕上锁住输入，界面反复报「游戏输入被提示窗口阻塞 / 等待稳定」。
+const fishResultClass = () => cls("NN.PF.UI.Common", "UIFishResult");
+const fishResultFxClass = () => cls("NN.PF.UI.Common", "UIFishResultFx");
+// UIAlterMessage 的真实命名空间是 NN.PF.UI.Alter（不是 NN.PF.UI.Common），
+// 写错路径时 Hide() 同样永远打空。
+const alterMessageClass = () => cls("NN.PF.UI.Alter", "UIAlterMessage");
+const audioManagerClass = () => cls("NN.PF.Core.Managers", "AudioManager");
+
+// 会话稳定判定阈值。原来写 30 秒，而画面里每次瞬时输入锁都会把计时清零，
+// 于是永远「正在等待稳定」。真正需要的是「阻塞已解除且没有网络请求」。
+const SESSION_STABLE_MS = 5000;
+// 输入锁持续存在多久才算真弹窗（短于这个时长的是按钮动画/音效，不该动手）。
+const INPUT_BLOCK_GRACE_MS = 2500;
 
 function singleton(type) {
   const instance = method(type, "get_Instance", 0);
@@ -331,8 +346,9 @@ let lastTickFrame = -100;
 let frameLimitRequest = null;
 let appliedFrameLimit = null;
 let lastBlockedNoticeDismissAt = 0;
+let lastDismissAttemptAt = 0;
+let inputBlockedSince = 0;
 let networkSessionStableAt = 0;
-let autoDismissNoticesUntil = 0;
 const pendingSnapshots = [];
 
 // ---------------------------------------------------------------- 鉴权 header 采集
@@ -430,13 +446,19 @@ function pump() {
     applyFrameLimit();
     try {
       cachedTick = buildTick();
-      // 只在「我们自己刚发过动作」的短窗口内清理提示框，登录/网络提示仍归玩家。
-      // 关键：不能要求 networkReady 才关 —— 提示框本身就会阻塞输入、让
-      // networkReady 恒为 false，于是变成「有弹窗 → 判不 ready → 不去关弹窗」的死锁，
-      // 界面就一直停在「等待助手确认游戏会话」。
-      if (Date.now() < autoDismissNoticesUntil) {
-        if (cachedTick.inputBlocked) closeBlockingAlterMessage(true);
-        if (cachedTick.networkReady) closeGameConfirm();
+      // 关弹窗不能只在「刚发过动作」的短窗口里做：结果面板是回包后才弹出来的，
+      // 那一瞬间读不到，错过之后面板就一直挂着锁输入，界面永远停在
+      // 「游戏输入被提示窗口阻塞 / 正在等待稳定」。这里改成常驻巡检，
+      // 但要求阻塞已经持续 INPUT_BLOCK_GRACE_MS，避免把按钮动画当弹窗点。
+      const held = inputBlockedSince ? Date.now() - inputBlockedSince : 0;
+      if (cachedTick.inputBlocked && held >= INPUT_BLOCK_GRACE_MS && Date.now() - lastDismissAttemptAt >= 1200) {
+        lastDismissAttemptAt = Date.now();
+        let handled = false;
+        try { if (closeResultPanelOverlay()) handled = true; } catch (error) {}
+        try { if (closeGameConfirm()) handled = true; } catch (error) {}
+        try { if (closeBlockingAlterMessage(true)) handled = true; } catch (error) {}
+        // 三条认领都没命中：说明是协程被打断后残留的僵尸输入锁，直接清标记。
+        if (!handled) clearInputBlockFlag();
       }
     } catch (error) { cachedTick = null; }
   }
@@ -460,17 +482,14 @@ function intValue(value) {
 }
 
 function sendResult(payload) {
-  // 动作刚结束，游戏常会弹结果框（成功也一样）。开一个短暂清理窗口，
-  // 否则提示框会阻塞输入、让会话永远判不 ready，界面卡在「等待游戏会话」。
-  autoDismissNoticesUntil = Date.now() + 6000;
+  // 结果框的清理不再挂在这里：动作结束的瞬间面板还没弹出来，几秒窗口容易错过。
+  // 现在由 tick 常驻巡检（closeResultPanelOverlay + 僵尸输入锁兜底）。
   send(Object.assign({ type: "result" }, payload));
 }
 function failPending(message, errorKind) {
   if (!pending) return;
   const current = pending;
   pending = null;
-  if (networkSessionStableAt && Date.now() - networkSessionStableAt >= 30000)
-    autoDismissNoticesUntil = Date.now() + 5000;
   if (current.ui) { try { callVoid(uiMergeClass(), current.ui, "ResetParent", []); } catch (error) {} }
   sendResult({
     cmd: current.kind,
@@ -483,21 +502,81 @@ function failPending(message, errorKind) {
 }
 
 function closeMergeResultUi(ui) {
-  const resultOffset = fieldOffset(uiMergeClass(), "uiFishResult");
-  const fxOffset = fieldOffset(uiMergeClass(), "uiFishResultFx");
-  const result = ui.add(resultOffset).readPointer();
-  const fx = ui.add(fxOffset).readPointer();
-  if (fx && !fx.isNull()) { try { callVoid(tmpClass("NN.PF.UI.Common", "UIFishResultFx"), fx, "FinishFx", []); } catch (error) {} }
-  if (result && !result.isNull()) { try { callVoid(tmpClass("NN.PF.UI.Common", "UIFishResult"), result, "Confirm", []); } catch (error) {} }
+  closeResultUi(ui, uiMergeClass());
 }
 
 function closeBreedResultUi(ui) {
-  const resultOffset = fieldOffset(uiBreedClass(), "uiFishResult");
-  const fxOffset = fieldOffset(uiBreedClass(), "uiFishResultFx");
-  const result = ui.add(resultOffset).readPointer();
-  const fx = ui.add(fxOffset).readPointer();
-  if (fx && !fx.isNull()) { try { callVoid(tmpClass("NN.PF.UI.Common", "UIFishResultFx"), fx, "FinishFx", []); } catch (error) {} }
-  if (result && !result.isNull()) { try { callVoid(tmpClass("NN.PF.UI.Common", "UIFishResult"), result, "Confirm", []); } catch (error) {} }
+  closeResultUi(ui, uiBreedClass());
+}
+
+/**
+ * 收起「发现新鱼！」结果面板：先结束特效动画，再走面板自己的 Confirm。
+ * Confirm 就是结果面板上方那个「繁育 / 放置」按钮的回调入口，游戏自己也用它收面板。
+ */
+function closeResultUi(ui, uiType) {
+  // 整个函数必须自吞异常：它会在 checkMerge/checkBreed 里直接调用，
+  // 一旦抛出会被上层当成「动作失败」，把一次成功的合成判死。
+  try {
+    const resultOffset = fieldOffset(uiType, "uiFishResult");
+    const fxOffset = fieldOffset(uiType, "uiFishResultFx");
+    if (resultOffset === null || resultOffset === undefined) return false;
+    const result = ui.add(resultOffset).readPointer();
+    const fx = fxOffset === null || fxOffset === undefined ? null : ui.add(fxOffset).readPointer();
+    if (fx && !fx.isNull()) { try { callVoid(fishResultFxClass(), fx, "FinishFx", []); } catch (error) {} }
+    if (result && !result.isNull()) {
+      const resultType = fishResultClass();
+      if (!resultType || resultType.isNull()) return false;
+      callVoid(resultType, result, "Confirm", []);
+      return true;
+    }
+  } catch (error) { /* 面板已复位时 Confirm 会抛，交给外层兜底 */ }
+  return false;
+}
+
+/** 结果面板的外层 GameObject 是否真的亮着。 */
+function resultPanelVisible(ui, uiType) {
+  try {
+    const offset = fieldOffset(uiType, "viewResult");
+    if (offset === null || offset === undefined) return false;
+    const view = ui.add(offset).readPointer();
+    return !!view && !view.isNull() && gameObjectActive(view);
+  } catch (error) { return false; }
+}
+
+/**
+ * tick 巡检用：找出还亮着的结果面板并收起。
+ * 结果面板是回包之后才弹出来的，动作结束那一瞬间通常还读不到它，
+ * 所以不能只在 sendResult 的几秒窗口里关一次。
+ */
+function closeResultPanelOverlay() {
+  const targets = [[uiMergeClass(), "merge"], [uiBreedClass(), "breed"]];
+  for (let i = 0; i < targets.length; i++) {
+    const type = targets[i][0];
+    if (!type || type.isNull()) continue;
+    const ui = findFirst(type);
+    if (!ui) continue;
+    if (!resultPanelVisible(ui, type)) continue;
+    closeResultUi(ui, type);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * 兜底：isBlockUi 由 AudioManager.RunBlockUi 的协程负责复原。协程被打断
+ * （切场景、面板重复弹出）时这个标记会永久为 true，输入就再也放不开。
+ * 前面三条认领都打空时直接清标记，这一步只改输入锁，不动任何游戏数据。
+ */
+function clearInputBlockFlag() {
+  try {
+    const audio = findFirst(audioManagerClass());
+    if (!audio) return false;
+    const offset = fieldOffset(audioManagerClass(), "isBlockUi");
+    if (offset === null || offset === undefined) return false;
+    if (audio.add(offset).readU8() === 0) return false;
+    audio.add(offset).writeU8(0);
+    return true;
+  } catch (error) { return false; }
 }
 
 /**
@@ -523,11 +602,11 @@ function closeGameConfirm() {
 function closeBlockingAlterMessage(inputBlocked) {
   try {
     if (!inputBlocked || Date.now() - lastBlockedNoticeDismissAt < 1500) return false;
-    const type = cls("NN.PF.UI.Common", "UIAlterMessage");
+    const type = alterMessageClass();
     if (!type || type.isNull()) return false;
+    lastBlockedNoticeDismissAt = Date.now();
     const messages = findObjects(type);
     if (messages.length === 0) return false;
-    lastBlockedNoticeDismissAt = Date.now();
     for (let i = 0; i < messages.length; i++) {
       try {
         callVoid(type, messages[i], "Hide", []);
@@ -542,7 +621,7 @@ function readResultFish(ui, uiType) {
   try {
     const result = ui.add(fieldOffset(uiType, "uiFishResult")).readPointer();
     if (!result || result.isNull()) return null;
-    const fish = result.add(fieldOffset(tmpClass("NN.PF.UI.Common", "UIFishResult"), "fish")).readPointer();
+    const fish = result.add(fieldOffset(fishResultClass(), "fish")).readPointer();
     if (!fish || fish.isNull()) return null;
     const type = fish.readPointer();
     return {
@@ -550,15 +629,6 @@ function readResultFish(ui, uiType) {
       sp: readString(fish.add(fishField(type, "Fish")).readPointer())
     };
   } catch (error) { return null; }
-}
-
-function resultVisible(ui) {
-  try {
-    const result = ui.add(fieldOffset(uiMergeClass(), "uiFishResult")).readPointer();
-    if (!result || result.isNull()) return false;
-    const gameObject = result.add(fieldOffset(tmpClass("UnityEngine", "MonoBehaviour"), "m_CachedPtr"));
-    return false;
-  } catch (error) { return false; }
 }
 
 function mergeSlotCount(ui) {
@@ -834,12 +904,19 @@ function buildTick() {
   try { fish = readFishList(); counter = readCounters(); } catch (error) { counter = null; }
   const interaction = readInteraction();
   const session = networkSessionStatus();
-  if (!session.ready || interaction.networkBusy || interaction.inputBlocked) networkSessionStableAt = 0;
+  // 输入锁带抖动：按钮音效、面板动画都会瞬间把 isBlockUi 置 true。
+  // 原来只要读到一次阻塞就把稳定计时清零，结果是永远「正在等待稳定」。
+  // 现在只有阻塞连续存在超过容忍窗口才算真阻塞。
+  if (interaction.inputBlocked) {
+    if (!inputBlockedSince) inputBlockedSince = Date.now();
+  } else inputBlockedSince = 0;
+  const blockedLongEnough = inputBlockedSince > 0 && Date.now() - inputBlockedSince >= INPUT_BLOCK_GRACE_MS;
+  if (!session.ready || interaction.networkBusy || blockedLongEnough) networkSessionStableAt = 0;
   else if (!networkSessionStableAt) networkSessionStableAt = Date.now();
-  const networkReady = networkSessionStableAt > 0 && Date.now() - networkSessionStableAt >= 30000;
+  const networkReady = networkSessionStableAt > 0 && Date.now() - networkSessionStableAt >= SESSION_STABLE_MS;
   const networkReadyReason = !session.ready ? session.reason
     : interaction.networkBusy ? "network_request_busy"
-    : interaction.inputBlocked ? "game_input_blocked"
+    : blockedLongEnough ? "game_input_blocked"
     : !networkReady ? "session_stabilizing" : "ready";
   let breedable = 0, exhausted = 0;
   fish.forEach(function (item) { if (item.bc > 0) breedable++; else exhausted++; });
@@ -859,8 +936,9 @@ function buildTick() {
     canLevelUp: counter ? counter.canLevelUp : false,
     secToHeart: secondsToHeart(counter, Math.floor(Date.now() / 1000)),
     // viewWindow 是最外层主容器，Home 页也处于 active；用它判忙会让自动合成永远停住。
-    gameBusy: interaction.networkBusy || interaction.inputBlocked || !!pending || !networkReady,
-    inputBlocked: !!interaction.inputBlocked,
+    gameBusy: interaction.networkBusy || blockedLongEnough || !!pending || !networkReady,
+    inputBlocked: blockedLongEnough,
+    inputBlockedPulse: !!interaction.inputBlocked,
     networkBusy: interaction.networkBusy,
     networkReady: networkReady,
     networkReadyReason: networkReadyReason,
